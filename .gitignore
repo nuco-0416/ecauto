@@ -1,0 +1,35 @@
+# Pythonのコンパイル済みファイル・キャッシュ
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 仮想環境（もし作るなら）
+venv/
+# env/
+# .env
+
+# OSのゴミファイル
+.DS_Store
+Thumbs.db
+
+# IDEの設定ファイル
+.vscode/
+.idea/
+
+# 【重要】今回のプロジェクト固有の除外設定
+# データベースファイル（バイナリなのでGit管理しない）
+# *.db
+# *.sqlite3
+
+# 機密情報・トークン・認証情報
+# ※設計案のパスに合わせています
+# platforms/*/accounts/tokens/
+# platforms/*/accounts/account_config.json
+# shared/config/secrets.py
+
+# ログファイル
+*.log
+logs/
+
+# キャッシュデータ（量が多いのでGit管理しない）
+# inventory/data/cache/
