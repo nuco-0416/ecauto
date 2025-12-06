@@ -1,0 +1,12 @@
+{
+  "accounts": [
+    {
+      "id": "amazon_business_main",
+      "name": "Amazonビジネスメインアカウント",
+      "active": true,
+      "profile_name": "amazon_business_main",
+      "login_url": "https://www.amazon.co.jp/",
+      "description": "仕入れ購入用メインアカウント"
+    }
+  ]
+}

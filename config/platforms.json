@@ -1,0 +1,71 @@
+{
+  "platforms": {
+    "base": {
+      "enabled": true,
+      "service_name": "ECAutoUploadScheduler-BASE",
+      "display_name": "EC Auto - BASE Upload Scheduler",
+      "description": "BASE へのアップロード処理",
+      "interval_seconds": 60,
+      "batch_size": 10,
+      "business_hours": {
+        "start": 6,
+        "end": 23
+      },
+      "accounts": [
+        "base_account_1",
+        "base_account_2"
+      ]
+    },
+    "ebay": {
+      "enabled": false,
+      "service_name": "ECAutoUploadScheduler-eBay",
+      "display_name": "EC Auto - eBay Upload Scheduler",
+      "description": "eBay へのアップロード処理（未実装）",
+      "interval_seconds": 120,
+      "batch_size": 5,
+      "business_hours": {
+        "start": 0,
+        "end": 24
+      },
+      "accounts": [
+        "ebay_account_1"
+      ]
+    },
+    "yahoo": {
+      "enabled": false,
+      "service_name": "ECAutoUploadScheduler-Yahoo",
+      "display_name": "EC Auto - Yahoo! Auction Upload Scheduler",
+      "description": "Yahoo!オークション へのアップロード処理（未実装）",
+      "interval_seconds": 90,
+      "batch_size": 8,
+      "business_hours": {
+        "start": 6,
+        "end": 23
+      },
+      "accounts": [
+        "yahoo_account_1"
+      ]
+    },
+    "mercari_shops": {
+      "enabled": false,
+      "service_name": "ECAutoUploadScheduler-MercariShops",
+      "display_name": "EC Auto - Mercari Shops Upload Scheduler",
+      "description": "メルカリショップス へのアップロード処理（実装中）",
+      "interval_seconds": 90,
+      "batch_size": 8,
+      "business_hours": {
+        "start": 6,
+        "end": 23
+      },
+      "accounts": [
+        "mercari_shops_main"
+      ]
+    }
+  },
+  "_comment": {
+    "enabled": "このプラットフォームを有効にするか（true/false）",
+    "interval_seconds": "チェック間隔（秒）",
+    "batch_size": "1回の処理件数",
+    "business_hours": "営業時間（start: 開始時刻, end: 終了時刻）"
+  }
+}

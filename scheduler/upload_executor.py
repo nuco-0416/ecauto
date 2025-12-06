@@ -1,0 +1,710 @@
+"""
+Upload Executor
+
+scheduled_at が到来したアイテムを実際にアップロードする実行モジュール
+"""
+
+import sys
+from pathlib import Path
+import time
+from typing import Dict, Any, Optional
+from datetime import datetime
+
+# パスを追加
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from inventory.core.master_db import MasterDB
+from platforms.base.accounts.manager import AccountManager
+from platforms.base.core.api_client import BaseAPIClient
+from scheduler.queue_manager import UploadQueueManager
+from common.ng_keyword_filter import NGKeywordFilter
+from common.pricing.calculator import PriceCalculator
+
+# eBay プラットフォーム
+from platforms.ebay.accounts.manager import EbayAccountManager
+from platforms.ebay.core.api_client import EbayAPIClient
+from platforms.ebay.core.category_mapper import CategoryMapper
+from platforms.ebay.core.policies import PolicyManager
+
+
+class UploadExecutor:
+    """
+    アップロード実行クラス
+
+    機能:
+    - scheduled_at が到来したアイテムを取得
+    - BASE APIでアップロード実行
+    - レート制限遵守
+    - リトライ処理
+    - ステータス更新
+    """
+
+    def __init__(
+        self,
+        db_path: str = None,
+        rate_limit_seconds: float = 2.0,
+        max_retries: int = 3,
+        retry_delay_seconds: float = 5.0
+    ):
+        """
+        Args:
+            db_path: マスタDBのパス
+            rate_limit_seconds: API呼び出し間隔（秒）
+            max_retries: 最大リトライ回数
+            retry_delay_seconds: リトライ間隔（秒）
+        """
+        self.db = MasterDB(db_path)
+        self.account_manager = AccountManager()
+        self.queue_manager = UploadQueueManager(db_path)
+
+        # eBay プラットフォーム用マネージャー
+        self.ebay_account_manager = EbayAccountManager()
+        self.ebay_policy_manager = PolicyManager()
+
+        self.rate_limit_seconds = rate_limit_seconds
+        self.max_retries = max_retries
+        self.retry_delay_seconds = retry_delay_seconds
+
+        self.last_api_call_time = 0  # レート制限用
+
+        # NGキーワードフィルターを初期化
+        project_root = Path(__file__).resolve().parent.parent
+        ng_keywords_file = project_root / 'config' / 'ng_keywords.json'
+        self.ng_filter = NGKeywordFilter(str(ng_keywords_file))
+
+        # 価格計算エンジンを初期化
+        self.price_calculator = PriceCalculator()
+
+    def _wait_for_rate_limit(self):
+        """レート制限のための待機"""
+        if self.last_api_call_time > 0:
+            elapsed = time.time() - self.last_api_call_time
+            if elapsed < self.rate_limit_seconds:
+                sleep_time = self.rate_limit_seconds - elapsed
+                time.sleep(sleep_time)
+
+        self.last_api_call_time = time.time()
+
+    def _prepare_item_data(self, asin: str, listing_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        BASE API用のアイテムデータを準備
+
+        Args:
+            asin: 商品ASIN
+            listing_info: 出品情報
+
+        Returns:
+            dict or None: BASE API用データ
+        """
+        # 商品情報を取得
+        product = self.db.get_product(asin)
+        if not product:
+            print(f"エラー: 商品情報が見つかりません: {asin}")
+            return None
+
+        # NGキーワードフィルターを適用
+        title = product.get('title_ja') or product.get('title_en') or f'商品 {asin}'
+        description = product.get('description_ja') or product.get('description_en') or ''
+
+        if self.ng_filter and self.ng_filter.ng_keywords:
+            title = self.ng_filter.filter_title(title)
+            description = self.ng_filter.filter_description(description)
+
+        # 価格を取得（selling_priceがない場合はamazon_price_jpyから計算）
+        selling_price = listing_info.get('selling_price')
+        if not selling_price:
+            amazon_price = product.get('amazon_price_jpy')
+            if amazon_price:
+                # 新しい価格計算モジュールを使用
+                # platform='base'を明示的に指定（JPY価格で計算）
+                selling_price = self.price_calculator.calculate_selling_price(
+                    amazon_price=amazon_price,
+                    platform='base'
+                )
+            else:
+                # 価格情報がない場合はエラーとしてスキップ
+                print(f"  [ERROR] 価格情報が取得できていません。このアイテムをスキップします")
+                return None
+
+        # BASE API用データを構築
+        item_data = {
+            'title': title,
+            'detail': description,
+            'price': int(selling_price),
+            'stock': int(listing_info.get('in_stock_quantity') or 1),
+            'visible': 1,  # 公開状態
+            'identifier': listing_info.get('sku', '')
+        }
+
+        return item_data
+
+    def upload_item(
+        self,
+        queue_item: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        単一アイテムをアップロード（リトライ付き）
+
+        Args:
+            queue_item: キューアイテム
+
+        Returns:
+            dict: 実行結果
+                - success: bool
+                - item_id: str (成功時)
+                - error: str (失敗時)
+                - retries: int
+        """
+        queue_id = queue_item['id']
+        asin = queue_item['asin']
+        platform = queue_item['platform']
+        account_id = queue_item['account_id']
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] アップロード開始: ASIN={asin}, Account={account_id}")
+
+        # 重複チェック（BASE本番環境との整合性チェック）
+        if platform == 'base':
+            try:
+                # 遅延インポート（循環インポート回避）
+                from platforms.base.core.duplicate_checker import BaseDuplicateChecker
+
+                checker = BaseDuplicateChecker(account_id, cache_ttl_seconds=300)
+
+                # ASINの重複チェック
+                asin_check = checker.check_asin(asin)
+                if asin_check['duplicate']:
+                    error_msg = f"重複検出: {asin_check['message']}"
+                    print(f"  [SKIP] {error_msg}")
+
+                    # キューステータスを更新（failed）
+                    self.queue_manager.update_queue_status(
+                        queue_id=queue_id,
+                        status=UploadQueueManager.STATUS_FAILED,
+                        error_message=error_msg
+                    )
+
+                    return {
+                        'success': False,
+                        'error': error_msg,
+                        'retries': 0,
+                        'skipped': True
+                    }
+
+                print(f"  [OK] 重複チェック完了: 重複なし")
+
+            except Exception as e:
+                # 重複チェック失敗時は警告だけ出してアップロードは継続
+                print(f"  [WARNING] 重複チェック失敗（継続）: {e}")
+
+        # ステータスを uploading に更新
+        self.queue_manager.update_queue_status(
+            queue_id=queue_id,
+            status=UploadQueueManager.STATUS_UPLOADING
+        )
+
+        # 出品情報を取得
+        listing = self.db.get_listing_by_sku(queue_item.get('metadata', {}).get('sku', ''))
+        if not listing:
+            # SKUがない場合はASINとアカウントIDから探す
+            listings = self.db.get_listings_by_asin(asin)
+            listing = next((l for l in listings if l['account_id'] == account_id), None)
+
+        if not listing:
+            error_msg = f"出品情報が見つかりません: {asin}"
+            print(f"エラー: {error_msg}")
+            self.queue_manager.update_queue_status(
+                queue_id=queue_id,
+                status=UploadQueueManager.STATUS_FAILED,
+                error_message=error_msg
+            )
+            return {'success': False, 'error': error_msg, 'retries': 0}
+
+        # アイテムデータを準備
+        item_data = self._prepare_item_data(asin, listing)
+        if not item_data:
+            error_msg = f"価格情報なし（Amazon価格取得失敗）: {asin}"
+            print(f"  [SKIP] {error_msg}")
+            self.queue_manager.update_queue_status(
+                queue_id=queue_id,
+                status=UploadQueueManager.STATUS_FAILED,
+                error_message=error_msg
+            )
+            return {'success': False, 'error': error_msg, 'retries': 0}
+
+        # プラットフォーム別アップロード処理
+        if platform == 'base':
+            return self._upload_to_base(queue_id, asin, account_id, item_data, listing)
+        elif platform == 'ebay':
+            return self._upload_to_ebay(queue_id, asin, account_id, listing)
+        else:
+            error_msg = f"未対応のプラットフォーム: {platform}"
+            print(f"  [ERROR] {error_msg}")
+            self.queue_manager.update_queue_status(
+                queue_id=queue_id,
+                status=UploadQueueManager.STATUS_FAILED,
+                error_message=error_msg
+            )
+            return {'success': False, 'error': error_msg, 'retries': 0}
+
+    def process_due_items(
+        self,
+        platform: str = 'base',
+        batch_size: int = 10
+    ) -> Dict[str, Any]:
+        """
+        scheduled_at が到来したアイテムを一括処理
+
+        Args:
+            platform: プラットフォーム名
+            batch_size: 1回の処理件数
+
+        Returns:
+            dict: 実行結果
+                - processed: 処理件数
+                - success: 成功件数
+                - failed: 失敗件数
+                - results: 個別結果のリスト
+        """
+        print(f"\n{'='*60}")
+        print(f"アップロード処理開始 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"プラットフォーム: {platform}")
+        print(f"バッチサイズ: {batch_size}")
+        print(f"{'='*60}\n")
+
+        # scheduled_at が到来したアイテムを取得
+        due_items = self.queue_manager.get_scheduled_items_due(
+            limit=batch_size,
+            platform=platform
+        )
+
+        if not due_items:
+            print("処理対象のアイテムはありません")
+            return {
+                'processed': 0,
+                'success': 0,
+                'failed': 0,
+                'results': []
+            }
+
+        print(f"処理対象: {len(due_items)}件\n")
+
+        # 各アイテムを処理
+        results = []
+        success_count = 0
+        failed_count = 0
+
+        for i, item in enumerate(due_items, 1):
+            print(f"[{i}/{len(due_items)}] ", end='')
+
+            result = self.upload_item(item)
+            results.append({
+                'queue_id': item['id'],
+                'asin': item['asin'],
+                'account_id': item['account_id'],
+                **result
+            })
+
+            if result['success']:
+                success_count += 1
+            else:
+                failed_count += 1
+
+            print()
+
+        # サマリー
+        print(f"\n{'='*60}")
+        print("処理完了")
+        print(f"{'='*60}")
+        print(f"処理件数: {len(due_items)}件")
+        print(f"成功: {success_count}件")
+        print(f"失敗: {failed_count}件")
+        print(f"成功率: {success_count / len(due_items) * 100:.1f}%")
+        print(f"{'='*60}\n")
+
+        return {
+            'processed': len(due_items),
+            'success': success_count,
+            'failed': failed_count,
+            'results': results
+        }
+
+    def process_pending_items(
+        self,
+        platform: str = 'base',
+        account_id: str = None,
+        batch_size: int = 10
+    ) -> Dict[str, Any]:
+        """
+        scheduled_timeに関係なく、pending状態のアイテムを強制処理
+
+        Args:
+            platform: プラットフォーム名
+            account_id: アカウントID（指定した場合、そのアカウントのみ処理）
+            batch_size: 1回の処理件数
+
+        Returns:
+            dict: 実行結果
+                - processed: 処理件数
+                - success: 成功件数
+                - failed: 失敗件数
+                - results: 個別結果のリスト
+        """
+        print(f"\n{'='*60}")
+        print(f"アップロード処理開始（強制実行モード） - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"プラットフォーム: {platform}")
+        if account_id:
+            print(f"アカウント: {account_id}")
+        print(f"バッチサイズ: {batch_size}")
+        print(f"{'='*60}\n")
+
+        # pending状態のアイテムを取得（scheduled_time無視）
+        pending_items = self.queue_manager.get_pending_items(
+            limit=batch_size,
+            platform=platform,
+            account_id=account_id
+        )
+
+        if not pending_items:
+            print("処理対象のアイテムはありません")
+            return {
+                'processed': 0,
+                'success': 0,
+                'failed': 0,
+                'results': []
+            }
+
+        print(f"処理対象: {len(pending_items)}件")
+        print(f"注意: scheduled_timeを無視して処理します\n")
+
+        # 各アイテムを処理
+        results = []
+        success_count = 0
+        failed_count = 0
+
+        for i, item in enumerate(pending_items, 1):
+            print(f"[{i}/{len(pending_items)}] ", end='')
+
+            result = self.upload_item(item)
+            results.append({
+                'queue_id': item['id'],
+                'asin': item['asin'],
+                'account_id': item['account_id'],
+                **result
+            })
+
+            if result['success']:
+                success_count += 1
+            else:
+                failed_count += 1
+
+            print()
+
+        # サマリー
+        print(f"\n{'='*60}")
+        print("処理完了")
+        print(f"{'='*60}")
+        print(f"処理件数: {len(pending_items)}件")
+        print(f"成功: {success_count}件")
+        print(f"失敗: {failed_count}件")
+        print(f"成功率: {success_count / len(pending_items) * 100:.1f}%")
+        print(f"{'='*60}\n")
+
+        return {
+            'processed': len(pending_items),
+            'success': success_count,
+            'failed': failed_count,
+            'results': results
+        }
+
+    # =========================================================================
+    # プラットフォーム別アップロード処理
+    # =========================================================================
+
+    def _upload_to_base(
+        self,
+        queue_id: int,
+        asin: str,
+        account_id: str,
+        item_data: Dict[str, Any],
+        listing: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        BASE APIでアップロード実行（リトライ付き）
+
+        Args:
+            queue_id: キューID
+            asin: 商品ASIN
+            account_id: アカウントID
+            item_data: BASE API用商品データ
+            listing: 出品情報レコード
+
+        Returns:
+            dict: 実行結果
+        """
+        last_error = None
+        for retry_count in range(self.max_retries):
+            try:
+                # レート制限待機
+                self._wait_for_rate_limit()
+
+                # BASE APIクライアントを作成（自動トークン更新付き）
+                api_client = BaseAPIClient(
+                    account_id=account_id,
+                    account_manager=self.account_manager
+                )
+
+                # アップロード実行
+                print(f"  API呼び出し中... (試行 {retry_count + 1}/{self.max_retries})")
+                response = api_client.create_item(item_data)
+
+                # 成功
+                item_id = response.get('item', {}).get('item_id')
+                print(f"  [OK] 商品登録成功: item_id={item_id}")
+
+                # ステータス更新
+                self.queue_manager.update_queue_status(
+                    queue_id=queue_id,
+                    status=UploadQueueManager.STATUS_SUCCESS,
+                    result_data={
+                        'item_id': item_id,
+                        'response': response,
+                        'retries': retry_count
+                    }
+                )
+
+                # listings テーブルの platform_item_id を更新
+                if item_id:
+                    self.db.update_listing(
+                        listing['id'],
+                        platform_item_id=item_id,
+                        status='listed'
+                    )
+
+                return {
+                    'success': True,
+                    'item_id': item_id,
+                    'retries': retry_count
+                }
+
+            except Exception as e:
+                last_error = str(e)
+                print(f"  [ERROR] 試行 {retry_count + 1} 失敗: {last_error}")
+
+                # 最後のリトライでない場合は待機
+                if retry_count < self.max_retries - 1:
+                    print(f"  {self.retry_delay_seconds}秒後にリトライします...")
+                    time.sleep(self.retry_delay_seconds)
+
+        # 全リトライ失敗
+        print(f"  [ERROR] 全リトライ失敗: {last_error}")
+        self.queue_manager.update_queue_status(
+            queue_id=queue_id,
+            status=UploadQueueManager.STATUS_FAILED,
+            error_message=last_error
+        )
+
+        return {
+            'success': False,
+            'error': last_error,
+            'retries': self.max_retries
+        }
+
+    def _upload_to_ebay(
+        self,
+        queue_id: int,
+        asin: str,
+        account_id: str,
+        listing: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        eBay APIでアップロード実行（リトライ付き）
+
+        Args:
+            queue_id: キューID
+            asin: 商品ASIN
+            account_id: アカウントID
+            listing: 出品情報レコード
+
+        Returns:
+            dict: 実行結果
+        """
+        last_error = None
+        for retry_count in range(self.max_retries):
+            try:
+                # レート制限待機
+                self._wait_for_rate_limit()
+
+                # 1. 商品情報を取得
+                product = self.db.get_product(asin)
+                if not product:
+                    error_msg = f"商品情報が見つかりません: {asin}"
+                    print(f"  [ERROR] {error_msg}")
+                    raise Exception(error_msg)
+
+                # 2. アカウント認証情報を取得
+                credentials = self.ebay_account_manager.get_credentials(account_id)
+                if not credentials:
+                    error_msg = f"eBayアカウント認証情報が見つかりません: {account_id}"
+                    print(f"  [ERROR] {error_msg}")
+                    raise Exception(error_msg)
+
+                environment = self.ebay_account_manager.get_environment(account_id)
+
+                # 3. eBay APIクライアントを初期化
+                ebay_client = EbayAPIClient(
+                    account_id=account_id,
+                    credentials=credentials,
+                    environment=environment
+                )
+
+                # 4. カテゴリ推薦を取得
+                print(f"  カテゴリ推薦を取得中... (試行 {retry_count + 1}/{self.max_retries})")
+                category_mapper = CategoryMapper(
+                    credentials=credentials,
+                    environment=environment
+                )
+
+                title = product.get('title_en') or product.get('title_ja', '')
+                description = product.get('description_en') or product.get('description_ja', '')
+
+                category_info = category_mapper.get_recommended_category(title, description)
+                if not category_info:
+                    error_msg = "カテゴリ推薦の取得に失敗しました"
+                    print(f"  [ERROR] {error_msg}")
+                    raise Exception(error_msg)
+
+                category_id = category_info['category_id']
+                print(f"  [OK] カテゴリ推薦: {category_info['category_name']} (ID: {category_id})")
+
+                # 5. ビジネスポリシーを取得
+                policies = self.ebay_policy_manager.get_default_policies(account_id)
+                if not policies:
+                    error_msg = f"eBayビジネスポリシーが設定されていません: {account_id}"
+                    print(f"  [ERROR] {error_msg}")
+                    raise Exception(error_msg)
+
+                print(f"  [OK] ポリシー取得完了")
+
+                # 6. Inventory Item データを構築
+                print(f"  Inventory Item データを構築中...")
+                item_data = ebay_client.build_inventory_item_data(product)
+
+                # 7. Inventory Item を作成/更新
+                sku = listing.get('sku', '')
+                print(f"  Inventory Item を作成中... (SKU: {sku})")
+
+                result = ebay_client.create_or_update_inventory_item(sku, item_data)
+                if not result.get('success'):
+                    error_msg = f"Inventory Item作成失敗: {result.get('error', 'Unknown error')}"
+                    print(f"  [ERROR] {error_msg}")
+                    raise Exception(error_msg)
+
+                print(f"  [OK] Inventory Item作成成功")
+
+                # 8. Offer を作成
+                selling_price = listing.get('selling_price')
+                if not selling_price:
+                    # 価格が設定されていない場合はAmazon価格から計算
+                    amazon_price = product.get('amazon_price_jpy')
+                    if amazon_price:
+                        # 新しい価格計算モジュールを使用
+                        # platform='ebay'を指定することで、自動的にJPY→USD換算が実施される
+                        selling_price = self.price_calculator.calculate_selling_price(
+                            amazon_price=amazon_price,
+                            platform='ebay'
+                        )
+                    else:
+                        error_msg = "販売価格を決定できません"
+                        print(f"  [ERROR] {error_msg}")
+                        raise Exception(error_msg)
+
+                quantity = listing.get('in_stock_quantity', 1)
+
+                print(f"  Offer を作成中... (価格: ${selling_price}, 在庫: {quantity})")
+
+                offer_id = ebay_client.create_offer(
+                    sku=sku,
+                    price=selling_price,
+                    category_id=category_id,
+                    policies=policies,
+                    quantity=quantity
+                )
+
+                if not offer_id:
+                    error_msg = "Offer作成失敗"
+                    print(f"  [ERROR] {error_msg}")
+                    raise Exception(error_msg)
+
+                print(f"  [OK] Offer作成成功: {offer_id}")
+
+                # 9. Offer を公開（リスティング作成）
+                print(f"  Offer を公開中...")
+                listing_id = ebay_client.publish_offer(offer_id)
+
+                if not listing_id:
+                    error_msg = "Offer公開失敗"
+                    print(f"  [ERROR] {error_msg}")
+                    raise Exception(error_msg)
+
+                print(f"  [OK] リスティング作成成功: {listing_id}")
+
+                # 10. eBayメタデータをデータベースに保存
+                ebay_metadata = {
+                    'listing_id': listing_id,
+                    'offer_id': offer_id,
+                    'category_id': category_id,
+                    'policy_payment_id': policies['payment'],
+                    'policy_return_id': policies['return'],
+                    'policy_fulfillment_id': policies['fulfillment'],
+                }
+
+                self.db.save_ebay_metadata(sku, ebay_metadata)
+                print(f"  [OK] eBayメタデータ保存完了")
+
+                # 11. ステータス更新
+                self.queue_manager.update_queue_status(
+                    queue_id=queue_id,
+                    status=UploadQueueManager.STATUS_SUCCESS,
+                    result_data={
+                        'listing_id': listing_id,
+                        'offer_id': offer_id,
+                        'category_id': category_id,
+                        'retries': retry_count
+                    }
+                )
+
+                # 12. listings テーブルの platform_item_id を更新
+                self.db.update_listing(
+                    listing['id'],
+                    platform_item_id=listing_id,
+                    status='listed'
+                )
+
+                return {
+                    'success': True,
+                    'item_id': listing_id,
+                    'retries': retry_count
+                }
+
+            except Exception as e:
+                last_error = str(e)
+                print(f"  [ERROR] 試行 {retry_count + 1} 失敗: {last_error}")
+
+                # 最後のリトライでない場合は待機
+                if retry_count < self.max_retries - 1:
+                    print(f"  {self.retry_delay_seconds}秒後にリトライします...")
+                    time.sleep(self.retry_delay_seconds)
+
+        # 全リトライ失敗
+        print(f"  [ERROR] 全リトライ失敗: {last_error}")
+        self.queue_manager.update_queue_status(
+            queue_id=queue_id,
+            status=UploadQueueManager.STATUS_FAILED,
+            error_message=last_error
+        )
+
+        return {
+            'success': False,
+            'error': last_error,
+            'retries': self.max_retries
+        }

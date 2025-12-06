@@ -1,35 +1,72 @@
-# Pythonのコンパイル済みファイル・キャッシュ
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# 仮想環境（もし作るなら）
+# 仮想環境
 venv/
-# env/
-# .env
+ENV/
+env/
 
-# OSのゴミファイル
-.DS_Store
-Thumbs.db
+# 環境変数
+.env
+.env.local
 
-# IDEの設定ファイル
-.vscode/
-.idea/
+# データベース
+*.db
+*.sqlite
+*.sqlite3
 
-# 【重要】今回のプロジェクト固有の除外設定
-# データベースファイル（バイナリなのでGit管理しない）
-# *.db
-# *.sqlite3
+# データファイル
+inventory/data/master.db
+inventory/data/cache/**/*.json
+inventory/data/backups/**
 
-# 機密情報・トークン・認証情報
-# ※設計案のパスに合わせています
-# platforms/*/accounts/tokens/
-# platforms/*/accounts/account_config.json
-# shared/config/secrets.py
+# トークン・認証情報
+platforms/**/tokens/**
+**/*_token.json
+**/credentials.json
+config/notifications.json
+
+# SellerSprite認証情報
+sourcing/data/sellersprite_cookies.json
+sourcing/data/chrome_profile/
+sourcing/data/screenshots/
+sourcing/sources/sellersprite/.env
 
 # ログファイル
 *.log
 logs/
 
-# キャッシュデータ（量が多いのでGit管理しない）
-# inventory/data/cache/
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# その他
+test_*.py
+*.bak
+*.tmp

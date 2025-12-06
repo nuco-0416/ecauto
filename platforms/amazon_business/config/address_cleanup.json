@@ -1,0 +1,10 @@
+{
+  "address_cleanup": {
+    "exclude_names": [
+      "ハディエント公式",
+      "小口博朗"
+    ],
+    "max_attempts": 100,
+    "description": "住所録クリーンアップ設定 - exclude_names に指定した名前の住所は削除されません"
+  }
+}

@@ -1,0 +1,287 @@
+{
+  "version": "1.1",
+  "last_updated": "2025-12-02",
+  "description": "BASE禁止商品チェック設定（医薬品・検査キット・酒類・チケット・占い・育毛・古物・ハイブランド・デジタルコンテンツ対応）",
+
+  "categories": {
+    "high_risk": [
+      "Health & Personal Care > Medical Supplies & Equipment",
+      "Health & Personal Care > Health Care",
+      "Health & Personal Care > Household Supplies > Household Medical Supplies",
+      "Sports & Outdoors > Hunting & Fishing > Knives",
+      "Sports & Outdoors > Sports & Fitness > Boxing & Martial Arts > Martial Arts Weapons",
+      "Automotive > Motorcycles & Powersports > Motorcycles"
+    ],
+    "medium_risk": [
+      "Sports & Outdoors > Outdoor Recreation > Cycling > Electric Bikes",
+      "Video Games > Digital Games & DLC",
+      "Gift Cards",
+      "Health & Personal Care > Vitamins & Dietary Supplements"
+    ],
+    "blocked": [
+      "Health & Personal Care > Medications",
+      "Health & Personal Care > Over-the-Counter Medication",
+      "Tobacco Products",
+      "ドラッグストア > 医薬品",
+      "ドラッグストア > 医薬部外品",
+      "ドラッグストア > 第一類医薬品",
+      "ドラッグストア > 第二類医薬品",
+      "ドラッグストア > 第三類医薬品",
+      "ドラッグストア > 遺伝子検査",
+      "Health & Personal Care > Health Tests",
+      "Health & Personal Care > Medical Tests",
+      "Grocery & Gourmet Food > Beverages > Alcoholic Beverages",
+      "ドラッグストア > お酒",
+      "食品・飲料 > アルコール飲料",
+      "Entertainment Collectibles > Event Tickets",
+      "Apps & Games > Digital Content"
+    ]
+  },
+
+  "keywords": {
+    "strict": {
+      "drugs": {
+        "keywords": ["覚せい剤", "麻薬", "大麻", "あへん", "毒物", "劇物"],
+        "weight": 100,
+        "base_rule": "項目1"
+      },
+      "cannabis": {
+        "keywords": ["大麻種", "合法ハーブ", "脱法ハーブ", "合法ドラッグ", "脱法ドラッグ", "THC"],
+        "weight": 100,
+        "base_rule": "項目2"
+      },
+      "weapons_strict": {
+        "keywords": ["銃", "拳銃", "ライフル", "火薬", "爆薬"],
+        "weight": 100,
+        "base_rule": "項目3"
+      },
+      "adult_strict": {
+        "keywords": ["AV女優", "アダルトビデオ", "18禁DVD", "児童ポルノ", "ロリ", "ショタ"],
+        "weight": 100,
+        "base_rule": "項目4, 5"
+      },
+      "used_clothing": {
+        "keywords": ["使用済み下着", "使用済み制服", "JK制服"],
+        "weight": 100,
+        "base_rule": "項目6"
+      },
+      "tobacco_strict": {
+        "keywords": ["たばこ", "タバコ", "煙草", "シガレット", "葉巻", "加熱式たばこ"],
+        "weight": 100,
+        "base_rule": "項目10"
+      },
+      "medical_strict": {
+        "keywords": ["医薬部外品", "医薬品", "薬事法", "第一類医薬品", "第二類医薬品", "第三類医薬品"],
+        "weight": 100,
+        "base_rule": "項目24"
+      },
+      "cash": {
+        "keywords": ["現金", "紙幣", "硬貨"],
+        "weight": 100,
+        "base_rule": "項目11"
+      },
+      "ivory": {
+        "keywords": ["象牙"],
+        "weight": 100,
+        "base_rule": "項目27"
+      },
+      "alcohol": {
+        "keywords": ["アルコール", "お酒", "ビール", "ワイン", "日本酒", "焼酎", "ウイスキー", "リキュール"],
+        "weight": 100,
+        "base_rule": "項目9"
+      },
+      "tickets": {
+        "keywords": ["チケット", "入場券", "観覧券", "招待券", "整理券"],
+        "weight": 100,
+        "base_rule": "項目16"
+      },
+      "fortune_telling": {
+        "keywords": ["占い", "占いサービス", "鑑定サービス", "スピリチュアル鑑定"],
+        "weight": 100,
+        "base_rule": "項目22"
+      }
+    },
+
+    "moderate": {
+      "medical": {
+        "keywords": ["医療機器", "血圧計", "体温計", "PCR検査", "妊娠検査薬", "検査キット", "遺伝子検査", "DNA検査", "コンタクトレンズ"],
+        "weight": 100,
+        "base_rule": "項目24"
+      },
+      "tobacco_moderate": {
+        "keywords": ["電子タバコ", "電子たばこ", "IQOS", "アイコス", "Ploom", "プルーム", "加熱式タバコ"],
+        "weight": 70,
+        "base_rule": "項目10"
+      },
+      "vehicles": {
+        "keywords": ["電動キックボード", "フル電動自転車", "電動バイク"],
+        "weight": 70,
+        "base_rule": "項目35"
+      },
+      "weapons_moderate": {
+        "keywords": ["サバイバルナイフ", "エアガン", "スタンガン", "催涙スプレー", "盗聴器", "隠しカメラ"],
+        "weight": 60,
+        "base_rule": "項目3, 17, 18"
+      },
+      "rmt": {
+        "keywords": ["ゲームアカウント", "RMT", "フォロワー購入", "いいね購入", "SNSアカウント"],
+        "weight": 60,
+        "base_rule": "項目21"
+      },
+      "vouchers": {
+        "keywords": ["商品券", "プリペイドカード", "印紙", "切手", "回数券", "ギフトカード", "ギフト券"],
+        "weight": 60,
+        "base_rule": "項目13"
+      },
+      "counterfeit": {
+        "keywords": ["偽ブランド", "模造品", "海賊版", "コピー品", "スーパーコピー", "レプリカ"],
+        "weight": 80,
+        "base_rule": "項目14"
+      },
+      "hair_growth": {
+        "keywords": ["育毛剤", "増毛", "発毛剤", "植毛", "育毛サービス", "カツラ", "ウィッグ医療用"],
+        "weight": 70,
+        "base_rule": "項目24"
+      },
+      "used_goods": {
+        "keywords": ["古着", "中古衣類", "トレーディングカード", "トレカ", "古物", "中古品"],
+        "weight": 60,
+        "base_rule": "項目7"
+      },
+      "luxury_brands": {
+        "keywords": ["シャネル", "エルメス", "ルイヴィトン", "グッチ", "プラダ", "ロレックス", "カルティエ", "ブルガリ"],
+        "weight": 50,
+        "base_rule": "項目14（偽造品リスク）"
+      },
+      "digital_content": {
+        "keywords": ["デジタルコンテンツ", "ダウンロード販売", "電子書籍", "音楽配信", "動画配信"],
+        "weight": 60,
+        "base_rule": "項目19"
+      }
+    },
+
+    "low": {
+      "medical_low": {
+        "keywords": ["薬", "サプリメント", "健康食品"],
+        "weight": 20,
+        "base_rule": "項目24"
+      },
+      "adult_low": {
+        "keywords": ["アダルト", "性的", "エロ", "R18", "成人向け"],
+        "weight": 30,
+        "base_rule": "項目4"
+      },
+      "child_low": {
+        "keywords": ["児童", "子供", "キッズ"],
+        "weight": 10,
+        "base_rule": "項目5"
+      },
+      "vehicles_low": {
+        "keywords": ["バイク", "オートバイ", "自動車", "車"],
+        "weight": 10,
+        "base_rule": "項目35"
+      }
+    },
+
+    "whitelist": {
+      "adult": [
+        "アダルトチキン",
+        "アダルト猫",
+        "アダルト犬",
+        "成猫用",
+        "成犬用",
+        "アダルトフード",
+        "大人用",
+        "成人用",
+        "大人向け"
+      ],
+      "av": [
+        "AVケーブル",
+        "AVアンプ",
+        "AV機器",
+        "AVレシーバー",
+        "AVセレクター"
+      ],
+      "child": [
+        "児童書",
+        "児童文学",
+        "児童用",
+        "子供用",
+        "キッズ用",
+        "お子様用",
+        "子供",
+        "幼稚園",
+        "保育園",
+        "男の子",
+        "女の子",
+        "入学",
+        "ロリータ",
+        "ロリータファッション"
+      ],
+      "medical": [
+        "ポカリスエット",
+        "アミノバイタル",
+        "スポーツ飲料",
+        "栄養ドリンク",
+        "ビタミン剤",
+        "ビタミン",
+        "サプリメント"
+      ],
+      "vehicles": [
+        "バイク用",
+        "バイクパーツ",
+        "オートバイ用",
+        "自動車用",
+        "車用",
+        "バイクアクセサリー",
+        "タイヤ",
+        "グローブ",
+        "ヘルメット",
+        "バイク",
+        "オートバイ",
+        "車",
+        "自動車",
+        "ワッペン",
+        "刺しゅう",
+        "アップリケ",
+        "乗り物"
+      ],
+      "tickets": [
+        "チケットホルダー",
+        "チケットケース",
+        "チケット入れ",
+        "パスケース"
+      ],
+      "alcohol": [
+        "ノンアルコール",
+        "アルコールフリー",
+        "アルコール消毒",
+        "アルコール除菌",
+        "消毒用アルコール"
+      ],
+      "hair": [
+        "育毛シャンプー",
+        "ヘアケア",
+        "スカルプケア",
+        "ファッションウィッグ",
+        "コスプレウィッグ"
+      ]
+    }
+  },
+
+  "brands": {
+    "blacklist": []
+  },
+
+  "risk_thresholds": {
+    "auto_block": 80,
+    "manual_review": 50,
+    "auto_approve": 30
+  },
+
+  "notes": {
+    "weight_calculation": "各キーワードのweightを合計してリスクスコアを算出",
+    "whitelist_override": "ホワイトリストに該当する場合はスコアを0に設定",
+    "category_bonus": "high_riskカテゴリに該当する場合は+30、medium_riskは+20を加算"
+  }
+}

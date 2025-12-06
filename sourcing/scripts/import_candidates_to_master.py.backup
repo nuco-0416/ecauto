@@ -1,0 +1,356 @@
+"""
+出品連携スクリプト
+
+sourcing_candidatesから商品情報を取得し、master.dbに登録して出品キューに追加する
+
+Phase 1: 手動実行版
+- daemon停止確認が必要
+- SP-API使用のため、約20分/2000件（バッチ処理想定）の処理時間
+"""
+
+import sys
+import os
+import sqlite3
+import random
+import argparse
+from pathlib import Path
+from datetime import datetime
+from typing import List, Dict, Any, Optional
+from dotenv import load_dotenv
+
+# プロジェクトルートをパスに追加
+project_root = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from integrations.amazon.sp_api_client import AmazonSPAPIClient
+from inventory.core.master_db import MasterDB
+from scheduler.queue_manager import UploadQueueManager
+
+
+class CandidateImporter:
+    """
+    sourcing_candidatesからmaster.dbへの連携クラス
+    """
+
+    def __init__(self, limit: Optional[int] = None, dry_run: bool = False):
+        """
+        Args:
+            limit: 処理する最大件数（Noneの場合は全件）
+            dry_run: Trueの場合、実際の登録は行わず確認のみ
+        """
+        self.limit = limit
+        self.dry_run = dry_run
+
+        # データベースパス
+        self.sourcing_db_path = project_root / 'sourcing' / 'data' / 'sourcing.db'
+
+        # MasterDB初期化
+        self.master_db = MasterDB()
+
+        # UploadQueueManager初期化
+        self.queue_manager = UploadQueueManager()
+
+        # SP-API認証情報を環境変数から取得
+        load_dotenv(project_root / '.env')
+        sp_api_credentials = {
+            'refresh_token': os.getenv('REFRESH_TOKEN'),
+            'lwa_app_id': os.getenv('LWA_APP_ID'),
+            'lwa_client_secret': os.getenv('LWA_CLIENT_SECRET')
+        }
+
+        # SP-APIClient初期化
+        self.sp_api_client = AmazonSPAPIClient(sp_api_credentials)
+
+        # アカウント情報（base_account_1, base_account_2）
+        self.accounts = ['base_account_1', 'base_account_2']
+
+        # 統計情報
+        self.stats = {
+            'total_asins': 0,
+            'fetched_count': 0,
+            'failed_fetch_count': 0,
+            'added_to_products': 0,
+            'added_to_queue': 0,
+            'failed_queue_count': 0,
+            'updated_status_count': 0
+        }
+
+    def run(self):
+        """メイン処理"""
+        print("\n" + "=" * 70)
+        print("出品連携スクリプト - sourcing_candidates → master.db")
+        print("=" * 70)
+        print(f"実行モード: {'DRY RUN（確認のみ）' if self.dry_run else '本番実行'}")
+        print(f"処理件数制限: {self.limit if self.limit else '全件'}")
+        print(f"対象アカウント: {', '.join(self.accounts)}")
+        print("=" * 70)
+        print()
+
+        # 1. sourcing_candidatesから未処理ASIN取得
+        asins = self._get_candidate_asins()
+        if not asins:
+            print("[INFO] 処理対象のASINがありません")
+            return
+
+        self.stats['total_asins'] = len(asins)
+        print(f"\n[1/6] 候補ASIN取得完了: {len(asins)}件\n")
+
+        if self.dry_run:
+            print(f"[DRY RUN] 最初の10件を表示:")
+            for i, asin in enumerate(asins[:10], 1):
+                print(f"  {i}. {asin}")
+            if len(asins) > 10:
+                print(f"  ... 他 {len(asins) - 10}件")
+            print()
+
+        # 2. SP-APIで商品情報取得
+        print(f"[2/6] SP-APIで商品情報を取得中...")
+        print(f"      注意: SP-APIレート制限により、処理に時間がかかります")
+        print(f"      推定時間: 約{len(asins) * 12 / 60:.1f}分")
+        print()
+
+        if not self.dry_run:
+            products_data = self._fetch_products_data(asins)
+            print(f"\n[INFO] 商品情報取得完了: 成功 {self.stats['fetched_count']}件 / 失敗 {self.stats['failed_fetch_count']}件\n")
+        else:
+            print(f"[DRY RUN] SP-API呼び出しをスキップ\n")
+            products_data = {}
+
+        # 3. productsテーブルに登録
+        print(f"[3/6] productsテーブルへの登録中...")
+        if not self.dry_run and products_data:
+            self._add_to_products(products_data)
+            print(f"      登録完了: {self.stats['added_to_products']}件\n")
+        else:
+            print(f"[DRY RUN] productsテーブルへの登録をスキップ\n")
+
+        # 4. アカウント割り振り（1000件ずつランダム）
+        print(f"[4/6] アカウント割り振り中...")
+        account_assignments = self._assign_accounts(asins)
+        for account_id, assigned_asins in account_assignments.items():
+            print(f"      {account_id}: {len(assigned_asins)}件")
+        print()
+
+        # 5. upload_queueに追加
+        print(f"[5/6] upload_queueへの追加中...")
+        if not self.dry_run:
+            self._add_to_upload_queue(account_assignments)
+            print(f"      追加完了: {self.stats['added_to_queue']}件 / 失敗 {self.stats['failed_queue_count']}件\n")
+        else:
+            print(f"[DRY RUN] upload_queueへの追加をスキップ\n")
+
+        # 6. sourcing_candidatesのstatus更新
+        print(f"[6/6] sourcing_candidatesのstatus更新中...")
+        if not self.dry_run:
+            self._update_candidate_status(asins, 'imported')
+            print(f"      更新完了: {self.stats['updated_status_count']}件\n")
+        else:
+            print(f"[DRY RUN] status更新をスキップ\n")
+
+        # サマリー表示
+        self._print_summary()
+
+    def _get_candidate_asins(self) -> List[str]:
+        """
+        sourcing_candidatesから未処理ASINを取得
+
+        Returns:
+            list: ASINのリスト
+        """
+        conn = sqlite3.connect(self.sourcing_db_path)
+        cursor = conn.cursor()
+
+        try:
+            query = "SELECT DISTINCT asin FROM sourcing_candidates WHERE status='candidate'"
+            if self.limit:
+                query += f" LIMIT {self.limit}"
+
+            cursor.execute(query)
+            asins = [row[0] for row in cursor.fetchall()]
+            return asins
+
+        finally:
+            conn.close()
+
+    def _fetch_products_data(self, asins: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        SP-APIで商品情報を取得
+
+        Args:
+            asins: ASINのリスト
+
+        Returns:
+            dict: ASIN別の商品情報
+        """
+        products_data = {}
+
+        # 個別に処理（既存のget_products_batchは内部でループ処理）
+        for i, asin in enumerate(asins, 1):
+            try:
+                print(f"  [{i}/{len(asins)}] {asin} を取得中...", end='', flush=True)
+
+                # 商品情報取得
+                batch_data = self.sp_api_client.get_products_batch([asin])
+
+                if asin in batch_data:
+                    products_data[asin] = batch_data[asin]
+                    self.stats['fetched_count'] += 1
+                    print(" OK")
+                else:
+                    self.stats['failed_fetch_count'] += 1
+                    print(" FAILED (データなし)")
+
+            except Exception as e:
+                self.stats['failed_fetch_count'] += 1
+                print(f" ERROR: {e}")
+
+        return products_data
+
+    def _add_to_products(self, products_data: Dict[str, Dict[str, Any]]):
+        """
+        productsテーブルに商品情報を登録
+
+        Args:
+            products_data: ASIN別の商品情報
+        """
+        for asin, data in products_data.items():
+            try:
+                self.master_db.add_product(
+                    asin=asin,
+                    title_ja=data.get('title_ja'),
+                    title_en=data.get('title_en'),
+                    description_ja=data.get('description_ja'),
+                    description_en=data.get('description_en'),
+                    category=data.get('category'),
+                    brand=data.get('brand'),
+                    images=data.get('images'),
+                    amazon_price_jpy=data.get('amazon_price_jpy'),
+                    amazon_in_stock=data.get('amazon_in_stock')
+                )
+                self.stats['added_to_products'] += 1
+
+            except Exception as e:
+                print(f"  [ERROR] {asin} の登録に失敗: {e}")
+
+    def _assign_accounts(self, asins: List[str]) -> Dict[str, List[str]]:
+        """
+        アカウント割り振り（1000件ずつランダム）
+
+        Args:
+            asins: ASINのリスト
+
+        Returns:
+            dict: アカウントID別のASINリスト
+        """
+        # ASINをシャッフル
+        shuffled_asins = asins.copy()
+        random.shuffle(shuffled_asins)
+
+        # 1000件ずつ割り振り
+        account_assignments = {}
+        for i, account_id in enumerate(self.accounts):
+            start_idx = i * 1000
+            end_idx = min(start_idx + 1000, len(shuffled_asins))
+            account_assignments[account_id] = shuffled_asins[start_idx:end_idx]
+
+        return account_assignments
+
+    def _add_to_upload_queue(self, account_assignments: Dict[str, List[str]]):
+        """
+        upload_queueに追加
+
+        Args:
+            account_assignments: アカウントID別のASINリスト
+        """
+        for account_id, asins in account_assignments.items():
+            for asin in asins:
+                try:
+                    success = self.queue_manager.add_to_queue(
+                        asin=asin,
+                        platform='base',
+                        account_id=account_id,
+                        priority=UploadQueueManager.PRIORITY_NORMAL
+                    )
+
+                    if success:
+                        self.stats['added_to_queue'] += 1
+                    else:
+                        self.stats['failed_queue_count'] += 1
+
+                except Exception as e:
+                    self.stats['failed_queue_count'] += 1
+                    print(f"  [ERROR] {asin} のキュー追加に失敗: {e}")
+
+    def _update_candidate_status(self, asins: List[str], new_status: str):
+        """
+        sourcing_candidatesのstatusを更新
+
+        Args:
+            asins: ASINのリスト
+            new_status: 新しいステータス
+        """
+        conn = sqlite3.connect(self.sourcing_db_path)
+        cursor = conn.cursor()
+
+        try:
+            for asin in asins:
+                cursor.execute(
+                    "UPDATE sourcing_candidates SET status=?, imported_at=? WHERE asin=?",
+                    (new_status, datetime.now().isoformat(), asin)
+                )
+                self.stats['updated_status_count'] += 1
+
+            conn.commit()
+
+        finally:
+            conn.close()
+
+    def _print_summary(self):
+        """サマリーを表示"""
+        print("=" * 70)
+        print("実行結果サマリー")
+        print("=" * 70)
+        print(f"処理対象ASIN数:       {self.stats['total_asins']:>6}件")
+        print(f"商品情報取得成功:     {self.stats['fetched_count']:>6}件")
+        print(f"商品情報取得失敗:     {self.stats['failed_fetch_count']:>6}件")
+        print(f"productsテーブル追加: {self.stats['added_to_products']:>6}件")
+        print(f"upload_queue追加:     {self.stats['added_to_queue']:>6}件")
+        print(f"upload_queue失敗:     {self.stats['failed_queue_count']:>6}件")
+        print(f"status更新:           {self.stats['updated_status_count']:>6}件")
+        print("=" * 70)
+
+        if self.dry_run:
+            print("\n[DRY RUN完了] 実際の登録は行われていません")
+        else:
+            print("\n[実行完了] 出品連携が正常に完了しました")
+
+        print("=" * 70)
+        print()
+
+
+def main():
+    """メイン関数"""
+    parser = argparse.ArgumentParser(
+        description='出品連携スクリプト - sourcing_candidates → master.db'
+    )
+    parser.add_argument(
+        '--limit',
+        type=int,
+        default=None,
+        help='処理する最大件数（デフォルト: 全件）'
+    )
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='DRY RUNモード（確認のみ、実際の登録は行わない）'
+    )
+
+    args = parser.parse_args()
+
+    # CandidateImporterを初期化して実行
+    importer = CandidateImporter(limit=args.limit, dry_run=args.dry_run)
+    importer.run()
+
+
+if __name__ == '__main__':
+    main()

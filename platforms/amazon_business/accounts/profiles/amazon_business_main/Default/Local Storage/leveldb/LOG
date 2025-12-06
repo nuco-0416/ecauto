@@ -1,0 +1,6 @@
+2025/12/02-21:44:41.164 3024 Reusing MANIFEST C:\Users\hiroo\Documents\GitHub\ecauto\platforms\amazon_business\accounts\profiles\amazon_business_main\Default\Local Storage\leveldb/MANIFEST-000001
+2025/12/02-21:44:41.168 3024 Recovering log #3
+2025/12/02-21:44:41.170 3024 Reusing old log C:\Users\hiroo\Documents\GitHub\ecauto\platforms\amazon_business\accounts\profiles\amazon_business_main\Default\Local Storage\leveldb/000003.log 
+2025/12/02-21:45:41.184 3b360 Level-0 table #5: started
+2025/12/02-21:45:41.190 3b360 Level-0 table #5: 120829 bytes OK
+2025/12/02-21:45:41.192 3b360 Delete type=0 #3

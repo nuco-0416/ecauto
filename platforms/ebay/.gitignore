@@ -1,0 +1,14 @@
+# eBay アカウント設定・トークン
+accounts/account_config.json
+accounts/tokens/*.json
+
+# キャッシュファイル
+data/category_cache/*.json
+
+# ログファイル
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

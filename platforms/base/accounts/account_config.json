@@ -1,0 +1,43 @@
+{
+  "accounts": [
+    {
+      "id": "base_account_1",
+      "name": "在庫BAZAAR",
+      "description": "byode.otoku@molinokuma.co.jp",
+      "active": false,
+      "daily_upload_limit": 1000,
+      "rate_limit_per_hour": 50,
+      "credentials": {
+        "client_id": "ea27d8083e10fa4ac548f7f1a24442ba",
+        "client_secret": "a202baccfedce01e41a3d40e403f1030",
+        "redirect_uri": "http://localhost:8080/callback"
+      }
+    },
+    {
+      "id": "base_account_2",
+      "name": "バイヤー倉庫【送料無料】",
+      "description": "base.shop.monty@honeybeeeee.com",
+      "active": true,
+      "daily_upload_limit": 1000,
+      "rate_limit_per_hour": 50,
+      "credentials": {
+        "client_id": "3c6a10d74a5639ca0ae6c2baa46687f5",
+        "client_secret": "976df14d8bd4226d3156fd1eb62d7a94",
+        "redirect_uri": "https://duty-guides-auburn-downloading.trycloudflare.com"
+      }
+    },
+    {
+      "id": "base_account_3",
+      "name": "イイ値！SHOP",
+      "description": "アカウント3",
+      "active": true,
+      "daily_upload_limit": 1000,
+      "rate_limit_per_hour": 50,
+      "credentials": {
+        "client_id": "efdab9dd07b68fe8768d2e4d0f47335c",
+        "client_secret": "f3ce10416e8b6a12c24c24139cf469b5",
+        "redirect_uri": "https://universities-halo-sociology-meat.trycloudflare.com/callback"
+      }
+    }
+  ]
+}

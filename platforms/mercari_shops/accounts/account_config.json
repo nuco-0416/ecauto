@@ -1,0 +1,25 @@
+{
+  "accounts": [
+    {
+      "id": "mercari_shops_GIGP",
+      "name": "メルカリショップス GIGP",
+      "description": "GIGP-森のくま運営",
+      "active": true,
+      "daily_upload_limit": 1000,
+      "rate_limit_per_hour": 50,
+      "login_url": "https://mercari-shops.com/signin/seller/owner",
+      "credentials": {}
+    },
+    {
+      "id": "mercari_shops_KYAW",
+      "name": "メルカリショップス KYAW",
+      "description": "KYAW-デイジー運営",
+      "active": true,
+      "daily_upload_limit": 1000,
+      "rate_limit_per_hour": 50,
+      "login_url": "https://mercari-shops.com/signin/seller/owner",
+      "credentials": {}
+    }
+
+  ]
+}

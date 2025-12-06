@@ -1,0 +1,301 @@
+"""
+商品登録ユーティリティ
+
+products + listings + upload_queueへの一括登録を提供
+コードの重複を避け、プロジェクト全体で統一された登録ロジックを保つ
+"""
+
+from datetime import datetime
+from typing import Dict, Any, Optional
+from pathlib import Path
+import sys
+
+# プロジェクトルートをパスに追加
+project_root = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from inventory.core.master_db import MasterDB
+from scheduler.queue_manager import UploadQueueManager
+from shared.utils.sku_generator import generate_sku
+
+
+class ProductRegistrar:
+    """
+    商品の一括登録クラス
+
+    products + listings + upload_queueへの登録を一括で行う
+    """
+
+    def __init__(self, master_db: Optional[MasterDB] = None,
+                 queue_manager: Optional[UploadQueueManager] = None):
+        """
+        Args:
+            master_db: MasterDBインスタンス（Noneの場合は新規作成）
+            queue_manager: UploadQueueManagerインスタンス（Noneの場合は新規作成）
+        """
+        self.master_db = master_db or MasterDB()
+        self.queue_manager = queue_manager or UploadQueueManager()
+
+    def register_product(
+        self,
+        asin: str,
+        platform: str,
+        account_id: str,
+        product_data: Dict[str, Any],
+        markup_rate: float = 1.3,
+        priority: int = UploadQueueManager.PRIORITY_NORMAL,
+        add_to_queue: bool = True
+    ) -> Dict[str, bool]:
+        """
+        商品を一括登録（products + listings + upload_queue）
+
+        Args:
+            asin: ASIN
+            platform: プラットフォーム名（base/mercari/yahoo/ebay）
+            account_id: アカウントID
+            product_data: 商品情報（SP-APIから取得したデータ）
+                - title_ja: 日本語タイトル
+                - title_en: 英語タイトル
+                - description_ja: 日本語説明
+                - description_en: 英語説明
+                - category: カテゴリ
+                - brand: ブランド
+                - images: 画像URLリスト
+                - amazon_price_jpy: Amazon価格（円）
+                - amazon_in_stock: Amazon在庫有無
+            markup_rate: Amazon価格に対する掛け率（デフォルト: 1.3倍）
+            priority: キュー優先度（1-20、デフォルト: 5）
+            add_to_queue: upload_queueに追加するか（デフォルト: True）
+
+        Returns:
+            dict: {
+                'product_added': bool,
+                'listing_added': bool,
+                'queue_added': bool,
+                'sku': str
+            }
+        """
+        result = {
+            'product_added': False,
+            'listing_added': False,
+            'queue_added': False,
+            'sku': None
+        }
+
+        # バリデーション: 必須項目のチェック
+        validation_errors = []
+
+        if not product_data.get('title_ja'):
+            validation_errors.append('title_ja is required')
+
+        if not product_data.get('amazon_price_jpy'):
+            validation_errors.append('amazon_price_jpy is required')
+
+        if validation_errors:
+            print(f"  [VALIDATION ERROR] {asin}: {', '.join(validation_errors)}")
+            result['validation_errors'] = validation_errors
+            return result
+
+        # 1. productsテーブルに登録
+        try:
+            self.master_db.add_product(
+                asin=asin,
+                title_ja=product_data.get('title_ja'),
+                title_en=product_data.get('title_en'),
+                description_ja=product_data.get('description_ja'),
+                description_en=product_data.get('description_en'),
+                category=product_data.get('category'),
+                brand=product_data.get('brand'),
+                images=product_data.get('images'),
+                amazon_price_jpy=product_data.get('amazon_price_jpy'),
+                amazon_in_stock=product_data.get('amazon_in_stock')
+            )
+            result['product_added'] = True
+        except Exception as e:
+            # UNIQUE制約違反（既存のASIN）の場合はスキップしてlistings登録を続行
+            if 'UNIQUE constraint failed' in str(e) or 'already exists' in str(e).lower():
+                print(f"  [INFO] products既存スキップ ({asin})")
+                result['product_added'] = False  # 既存なので追加はしていない
+            else:
+                # その他のエラーの場合は処理を中断
+                print(f"  [ERROR] products登録失敗 ({asin}): {e}")
+                return result
+
+        # 2. listingsテーブルに登録
+        try:
+            # SKU生成
+            sku = generate_sku(
+                platform=platform,
+                asin=asin,
+                timestamp=datetime.now()
+            )
+            result['sku'] = sku
+
+            # 売価計算
+            amazon_price = product_data.get('amazon_price_jpy')
+            selling_price = self._calculate_selling_price(amazon_price, markup_rate)
+
+            # listings登録
+            self.master_db.add_listing(
+                asin=asin,
+                platform=platform,
+                account_id=account_id,
+                sku=sku,
+                selling_price=selling_price,
+                currency='JPY',
+                in_stock_quantity=1,  # デフォルト在庫数
+                status='pending',     # 未出品
+                visibility='public'
+            )
+            result['listing_added'] = True
+
+        except Exception as e:
+            # UNIQUE制約違反（既存のlisting）の場合はスキップしてqueue登録を続行
+            if 'UNIQUE constraint failed' in str(e) or 'already exists' in str(e).lower():
+                print(f"  [INFO] listings既存スキップ ({asin})")
+                result['listing_added'] = False  # 既存なので追加はしていない
+                # 既存のlistingからSKUを取得
+                existing_listings = self.master_db.get_listings_by_asin(asin)
+                existing_listing = next((l for l in existing_listings if l['platform'] == platform and l['account_id'] == account_id), None)
+                if existing_listing:
+                    result['sku'] = existing_listing['sku']
+            else:
+                # その他のエラーの場合は処理を中断
+                print(f"  [ERROR] listings登録失敗 ({asin}): {e}")
+                return result
+
+        # 3. upload_queueに追加（オプション）
+        if add_to_queue:
+            try:
+                success = self.queue_manager.add_to_queue(
+                    asin=asin,
+                    platform=platform,
+                    account_id=account_id,
+                    priority=priority
+                )
+                result['queue_added'] = success
+
+                if not success:
+                    print(f"  [WARNING] キュー追加失敗 ({asin})")
+
+            except Exception as e:
+                print(f"  [ERROR] キュー追加失敗 ({asin}): {e}")
+
+        return result
+
+    def _calculate_selling_price(self, amazon_price: Optional[int], markup_rate: float = 1.3) -> Optional[int]:
+        """
+        Amazon価格から売価を計算
+
+        Args:
+            amazon_price: Amazon価格
+            markup_rate: 掛け率（デフォルト1.3倍）
+
+        Returns:
+            int: 売価（10円単位に丸める）
+        """
+        if not amazon_price:
+            return None
+
+        selling_price = int(amazon_price * markup_rate)
+
+        # 価格を切りのいい数字に調整（例: 1984円 → 1990円）
+        if selling_price % 10 != 0:
+            selling_price = ((selling_price + 5) // 10) * 10
+
+        return selling_price
+
+    def register_products_batch(
+        self,
+        products: Dict[str, Dict[str, Any]],
+        platform: str,
+        account_id: str,
+        markup_rate: float = 1.3,
+        priority: int = UploadQueueManager.PRIORITY_NORMAL,
+        add_to_queue: bool = True
+    ) -> Dict[str, int]:
+        """
+        複数商品を一括登録
+
+        Args:
+            products: ASIN別の商品情報辞書
+            platform: プラットフォーム名
+            account_id: アカウントID
+            markup_rate: 掛け率
+            priority: キュー優先度
+            add_to_queue: キューに追加するか
+
+        Returns:
+            dict: {
+                'product_success': 成功件数,
+                'listing_success': 成功件数,
+                'queue_success': 成功件数,
+                'total': 総件数
+            }
+        """
+        stats = {
+            'product_success': 0,
+            'listing_success': 0,
+            'queue_success': 0,
+            'total': len(products)
+        }
+
+        for asin, product_data in products.items():
+            result = self.register_product(
+                asin=asin,
+                platform=platform,
+                account_id=account_id,
+                product_data=product_data,
+                markup_rate=markup_rate,
+                priority=priority,
+                add_to_queue=add_to_queue
+            )
+
+            if result['product_added']:
+                stats['product_success'] += 1
+            if result['listing_added']:
+                stats['listing_success'] += 1
+            if result['queue_added']:
+                stats['queue_success'] += 1
+
+        return stats
+
+
+# 使用例
+if __name__ == '__main__':
+    # テストデータ
+    test_asin = "B0FFN1RB6J"
+    test_product_data = {
+        'title_ja': 'テスト商品',
+        'title_en': 'Test Product',
+        'description_ja': 'テスト説明',
+        'description_en': 'Test Description',
+        'category': 'Electronics',
+        'brand': 'TestBrand',
+        'images': ['https://example.com/image1.jpg'],
+        'amazon_price_jpy': 2000,
+        'amazon_in_stock': True
+    }
+
+    # ProductRegistrarを初期化
+    registrar = ProductRegistrar()
+
+    # 商品登録
+    result = registrar.register_product(
+        asin=test_asin,
+        platform='base',
+        account_id='base_account_1',
+        product_data=test_product_data,
+        markup_rate=1.3,
+        add_to_queue=False  # テストなのでキューには追加しない
+    )
+
+    print("=" * 60)
+    print("ProductRegistrar テスト結果")
+    print("=" * 60)
+    print(f"ASIN: {test_asin}")
+    print(f"SKU: {result['sku']}")
+    print(f"products登録: {'OK' if result['product_added'] else 'NG'}")
+    print(f"listings登録: {'OK' if result['listing_added'] else 'NG'}")
+    print(f"queue登録: {'OK' if result['queue_added'] else 'NG'}")
+    print("=" * 60)

@@ -1,0 +1,14 @@
+{
+  "accounts": {
+    "ebay_account_1": {
+      "payment": "374677267023",
+      "return": "374677266023",
+      "fulfillment": "374676887023"
+    }
+  },
+  "notes": {
+    "description": "eBayビジネスポリシーID設定",
+    "how_to_get_policy_ids": "eBay Seller Hub > Account > Business Policies で確認できます",
+    "warning": "無効なポリシーIDの場合は scripts/setup_policies.py で再作成してください"
+  }
+}

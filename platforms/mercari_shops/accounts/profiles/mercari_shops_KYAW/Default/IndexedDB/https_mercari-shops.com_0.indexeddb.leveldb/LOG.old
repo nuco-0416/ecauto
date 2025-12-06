@@ -1,0 +1,6 @@
+2025/12/03-08:41:41.244 3901c Creating DB C:\Users\hiroo\Documents\GitHub\ecauto\platforms\mercari_shops\accounts\profiles\mercari_shops_KYAW\Default\IndexedDB\https_mercari-shops.com_0.indexeddb.leveldb since it was missing.
+2025/12/03-08:41:41.256 3901c Reusing MANIFEST C:\Users\hiroo\Documents\GitHub\ecauto\platforms\mercari_shops\accounts\profiles\mercari_shops_KYAW\Default\IndexedDB\https_mercari-shops.com_0.indexeddb.leveldb/MANIFEST-000001
+2025/12/03-08:41:41.307 359f8 Level-0 table #5: started
+2025/12/03-08:41:41.309 359f8 Level-0 table #5: 4466 bytes OK
+2025/12/03-08:41:41.311 359f8 Delete type=0 #3
+2025/12/03-08:41:41.318 152ec Manual compaction at level-0 from '\x00\x01\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x02\x00\x00\x00' @ 0 : 0; will stop at (end)

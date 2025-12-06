@@ -1,0 +1,22 @@
+{
+  "accounts": [
+    {
+      "id": "ebay_account_1",
+      "name": "eBay Main Account",
+      "description": "メインアカウント",
+      "active": true,
+      "environment": "production",
+      "credentials": {
+        "app_id": "YOUR_APP_ID_HERE",
+        "cert_id": "YOUR_CERT_ID_HERE",
+        "dev_id": "YOUR_DEV_ID_HERE",
+        "redirect_uri": "YOUR_REDIRECT_URI_HERE"
+      },
+      "settings": {
+        "merchant_location_key": "JP_LOCATION",
+        "default_currency": "USD",
+        "rate_limit_per_day": 5000
+      }
+    }
+  ]
+}

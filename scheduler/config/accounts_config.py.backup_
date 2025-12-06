@@ -1,0 +1,90 @@
+"""
+マルチアカウント・マルチプラットフォームアップロード構成
+
+並列処理するアカウントとプラットフォームの組み合わせを定義
+"""
+
+# アカウント構成
+# キー: プラットフォーム名
+# 値: アカウントIDのリスト
+UPLOAD_ACCOUNTS = {
+    'base': [
+        'base_account_1',
+        'base_account_2',
+    ],
+    # 将来の拡張用（コメントアウト）
+    # 'ebay': [
+    #     'ebay_account_1',
+    # ],
+    # 'yahoo': [
+    #     'yahoo_account_1',
+    # ],
+}
+
+# デーモン設定（全アカウント共通）
+DAEMON_CONFIG = {
+    'interval_seconds': 60,  # チェック間隔（秒）- 高速化のため240→60に変更
+    'batch_size': 20,  # 1回の処理件数 - 高速化のため1→20に変更
+    'business_hours_start': 0,  # 営業開始時刻（時）- 0時から
+    'business_hours_end': 24,  # 営業終了時刻（時）- 24時まで（24時間稼働）
+}
+
+# アカウント別の個別設定（オプション）
+# 特定のアカウントで設定を上書きしたい場合に使用
+ACCOUNT_SPECIFIC_CONFIG = {
+    # 例: account_1は処理速度を上げる
+    # 'base_account_1': {
+    #     'batch_size': 15,
+    # },
+    # 例: account_2は営業時間を制限
+    # 'base_account_2': {
+    #     'business_hours_start': 9,
+    #     'business_hours_end': 18,
+    # },
+}
+
+
+def get_all_accounts():
+    """
+    すべてのプラットフォーム・アカウントの組み合わせを取得
+
+    Returns:
+        list: [(platform, account_id), ...] のリスト
+    """
+    accounts = []
+    for platform, account_ids in UPLOAD_ACCOUNTS.items():
+        for account_id in account_ids:
+            accounts.append((platform, account_id))
+    return accounts
+
+
+def get_daemon_config(account_id: str = None):
+    """
+    デーモン設定を取得（アカウント別設定を考慮）
+
+    Args:
+        account_id: アカウントID（Noneの場合は共通設定を返す）
+
+    Returns:
+        dict: デーモン設定
+    """
+    config = DAEMON_CONFIG.copy()
+
+    # アカウント別設定があれば上書き
+    if account_id and account_id in ACCOUNT_SPECIFIC_CONFIG:
+        config.update(ACCOUNT_SPECIFIC_CONFIG[account_id])
+
+    return config
+
+
+def get_accounts_by_platform(platform: str):
+    """
+    指定プラットフォームのアカウントリストを取得
+
+    Args:
+        platform: プラットフォーム名
+
+    Returns:
+        list: アカウントIDのリスト
+    """
+    return UPLOAD_ACCOUNTS.get(platform, [])

@@ -1,0 +1,382 @@
+[
+  {
+    "name": "refresh_token",
+    "value": "5GmcJtnYRbXrfji7W8geBMqXzUuHWh1Lgj17pzwrH13vwRPd2xRwmQ1",
+    "domain": "mercari-shops.com",
+    "path": "/auth/token/refresh",
+    "expires": 1772493690.338503,
+    "httpOnly": true,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_GRECAPTCHA",
+    "value": "09ADiQh0c-GNLW-2125VU1skQ6D3qltTqQ78HLkEesMC6ASvmrSxAnnhvqNCMU9IPLre8cfGt2XgVGXCMAGQRWSmY",
+    "domain": "www.google.com",
+    "path": "/recaptcha",
+    "expires": 1780269647.049357,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "device_id",
+    "value": "2JHoQBieGzT9Dzm5FWwdL7",
+    "domain": "mercari-shops.com",
+    "path": "/auth",
+    "expires": 1799277690.33839,
+    "httpOnly": true,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "device_token",
+    "value": "5fpBWZsV57FiZW1YoPMYZkT3TSXADWeLdJsrKVGYY5uf",
+    "domain": "mercari-shops.com",
+    "path": "/auth",
+    "expires": 1799277690.338452,
+    "httpOnly": true,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "IDE",
+    "value": "AHWqTUnpm9uUnUMVX5d12xzkcJpfmZg9Qg4NNc6Gp0nnvZ3iy6iAplfUI_SYovS_",
+    "domain": ".doubleclick.net",
+    "path": "/",
+    "expires": 1799248759.249686,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "MR",
+    "value": "0",
+    "domain": ".bat.bing.com",
+    "path": "/",
+    "expires": 1765293559.359359,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "MUID",
+    "value": "24D78BC46E6D67953D6C9D726F68665D",
+    "domain": ".bing.com",
+    "path": "/",
+    "expires": 1798386041.911189,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "muc_ads",
+    "value": "bd65d3dc-4032-4ea8-8d10-6f4d66dba8d8",
+    "domain": ".t.co",
+    "path": "/",
+    "expires": 1799248759.396436,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "guest_id_marketing",
+    "value": "v1%3A176468876079282736",
+    "domain": ".twitter.com",
+    "path": "/",
+    "expires": 1799248759.400421,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "guest_id_ads",
+    "value": "v1%3A176468876079282736",
+    "domain": ".twitter.com",
+    "path": "/",
+    "expires": 1799248759.400509,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "personalization_id",
+    "value": "\"v1_1TAozi0l1EVNTd2udT5Guw==\"",
+    "domain": ".twitter.com",
+    "path": "/",
+    "expires": 1799248759.400545,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "guest_id",
+    "value": "v1%3A176468876079282736",
+    "domain": ".twitter.com",
+    "path": "/",
+    "expires": 1799248759.400575,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "XA",
+    "value": "a5e28olkiu0rp&sd=A&t=1764688761&u=1764688761&v=1",
+    "domain": ".yahoo.co.jp",
+    "path": "/",
+    "expires": 1796224759.548927,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "XB",
+    "value": "46e59bb6-cf92-11f0-be04-8dd0fdaca913&v=6&u=1764688761&s=cm",
+    "domain": ".yahoo.co.jp",
+    "path": "/",
+    "expires": 1799248759.548975,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "g",
+    "value": "AFmOU8ty_-n47dAxlH7HlSo6R7GRKD1HJCp2s6r_kpJgVSa1TBZtmdqq0dNp17WIbqSHlUmqo_aodTkLRpitTUs%3D",
+    "domain": ".smartnews-ads.com",
+    "path": "/",
+    "expires": 1799248759.611446,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "_gcl_au",
+    "value": "1.1.984446378.1764690040",
+    "domain": ".mercari-shops.com",
+    "path": "/",
+    "expires": 1772466040,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_fbp",
+    "value": "fb.1.1764690039846.329040515758146424",
+    "domain": ".mercari-shops.com",
+    "path": "/",
+    "expires": 1772493690,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_ga",
+    "value": "GA1.1.648026069.1764690040",
+    "domain": ".mercari-shops.com",
+    "path": "/",
+    "expires": 1799277632.379413,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "CLID",
+    "value": "ccd12abbe8a8430284e55e2638c840e0.20251202.20261202",
+    "domain": "www.clarity.ms",
+    "path": "/",
+    "expires": 1796226040.434575,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "_clck",
+    "value": "1xe2vmr%5E2%5Eg1i%5E0%5E2162",
+    "domain": ".mercari-shops.com",
+    "path": "/",
+    "expires": 1796226040,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "MR",
+    "value": "0",
+    "domain": ".c.bing.com",
+    "path": "/",
+    "expires": 1765294841.911266,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "SRM_B",
+    "value": "24D78BC46E6D67953D6C9D726F68665D",
+    "domain": ".c.bing.com",
+    "path": "/",
+    "expires": 1798386041.91129,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "MUID",
+    "value": "24D78BC46E6D67953D6C9D726F68665D",
+    "domain": ".clarity.ms",
+    "path": "/",
+    "expires": 1798386040.949435,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "MR",
+    "value": "0",
+    "domain": ".c.clarity.ms",
+    "path": "/",
+    "expires": 1765294840.949475,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "__cf_bm",
+    "value": "Gaqo2YDzPsceVDcmmWcP4PC5W1XWWeSnlmEgTqTt6_0-1764717432-1.0.1.1-1XEZ.h4TfeO4SWY8p5LGtrjnPAzEGYaKYoRPzKinU7HJklEfGUaZ4UVGx2Kj.drdDcDOPJ.YEfmFQcM5JAvvKPoRJiUDZStqcRk6sI7x7CE",
+    "domain": ".mercari-shops.com",
+    "path": "/",
+    "expires": 1764719230.021393,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "ab.storage.deviceId.7817acf4-d956-4487-94c6-992397584c5c",
+    "value": "%7B%22g%22%3A%22a6718165-9be2-fe1f-96fe-c7565f7ab0a4%22%2C%22c%22%3A1764687986335%2C%22l%22%3A1764717430362%7D",
+    "domain": ".mercari-shops.com",
+    "path": "/",
+    "expires": 1799277430,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_cfuvid",
+    "value": "K4Kjl8aVRPUovbuf9X07UaIFwWdgCVquW0z6x3ZGzSk-1764717634244-0.0.1.1-604800000",
+    "domain": ".mercari-shops.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "_ga_4NLR7T2LEN",
+    "value": "deleted",
+    "domain": "mercari-shops.com",
+    "path": "/",
+    "expires": 1799277632.378942,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_ga_4NLR7T2LEN",
+    "value": "GS2.1.s1764717632$o1$g0$t1764717632$j60$l0$h0",
+    "domain": ".mercari-shops.com",
+    "path": "/",
+    "expires": 1799277632.379133,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_ga",
+    "value": "GA1.1.1809495980.1764717638",
+    "domain": ".policies.google.com",
+    "path": "/",
+    "expires": 1799277638.448347,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "NID",
+    "value": "526=Huw8ZmXGxhpF4RXQxjgEohAaRueKAMCDUeK15z6TlWM5EcXnB9SoxGb_wXp9JtLTcRLjJPDHm8VEdElr2Dpp3Z_nVtH9WhmFK7WnZtk6eyxvFIg5BE7oFMb6Z69AXljYmR_Svj8NycBiKF-GODD3EdkoFHrE-RMfyQ4bdAQSVy74Sw6CRSjQTIUx8PTHm2TXgAC3jKXBTn9_4FM",
+    "domain": ".google.com",
+    "path": "/",
+    "expires": 1780528837.737235,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "OTZ",
+    "value": "8373561_20_20__20_",
+    "domain": "policies.google.com",
+    "path": "/",
+    "expires": 1767309639,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_ga_CVQP9NPQGY",
+    "value": "GS2.1.s1764717638$o1$g0$t1764717639$j59$l0$h0",
+    "domain": ".policies.google.com",
+    "path": "/",
+    "expires": 1799277639.824569,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "id_token",
+    "value": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im9MTEZQaDZ0NEhDU3N4cnFUQXdKWVMiLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJtYXJrZXRwbGFjZS5tZXJjYXJpLXNob3BzLmNvbSIsImV4cCI6MTc2NDcyMTI5MSwianRpIjoiMkpIb1FCbUtSeUVKVWRFZDkyYkpxNSIsImlzcyI6Imh0dHBzOi8vbWVyY2FyaS1zaG9wcy5jb20iLCJzdWIiOiJVNUtpQ1ZOc2ZXQW1yQUVpRVVQcFZOIiwibmlja25hbWUiOiJtcmMuc2hvcCIsImNpZCI6IkREZGl6ZFZKVFhteHM3WlNrenI1YkciLCJzaWQiOiIySkhvUUJqeVdOQTlYZUtrWlNNS2M2IiwiZGlkIjoiMkpIb1FCaWVHelQ5RHptNUZXd2RMNyIsInBhcnRuZXJfaWQiOiI3MjA1NzU5NDgwOTg3MDUwNSIsImlkcCI6Imdvb2dsZV9pZGVudGl0eV9wbGF0Zm9ybSIsImVtYWlsIjoibXJjLnNob3BAbW9saW5va3VtYS5jby5qcCIsInJvbGVzIjpbInNlbGxlciJdfQ.j951zRIO_NAWU32GubB6bD92SJ2tIDBHLvrcIaxO5jKeN4YPLd2Hg239xMZa0UYsiUBvryvAih1MYyR0gkiMGw",
+    "domain": "mercari-shops.com",
+    "path": "/",
+    "expires": 1764721289.338472,
+    "httpOnly": true,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "ab.storage.sessionId.7817acf4-d956-4487-94c6-992397584c5c",
+    "value": "%7B%22g%22%3A%2291d30b5f-621f-b291-c201-f063fca816b9%22%2C%22e%22%3A1764719490694%2C%22c%22%3A1764717430361%2C%22l%22%3A1764717690694%7D",
+    "domain": ".mercari-shops.com",
+    "path": "/",
+    "expires": 1799277690,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_mkto_trk",
+    "value": "id:330-OBD-783&token:_mch-mercari-shops.com-3a673be659dff359e7d1c8629388ceb1",
+    "domain": ".mercari-shops.com",
+    "path": "/",
+    "expires": 1799277691.051942,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_clsk",
+    "value": "2vbcip%5E1764717691358%5E5%5E0%5Ea.clarity.ms%2Fcollect",
+    "domain": ".mercari-shops.com",
+    "path": "/",
+    "expires": 1764804091,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_ga_4ZSVGRP1ZE",
+    "value": "GS2.1.s1764717430$o2$g1$t1764717691$j1$l0$h0",
+    "domain": ".mercari-shops.com",
+    "path": "/",
+    "expires": 1799277691.835376,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  }
+]

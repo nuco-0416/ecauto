@@ -1,0 +1,15 @@
+{
+  "description": "NGキーワード設定 - これらのキーワードが商品タイトル・説明文に含まれている場合、自動的に削除されます",
+  "version": "1.0",
+  "last_updated": "2025-11-20",
+  "keywords": [
+    "by Amazon",
+    "Amazon",
+    "アマゾン",
+    "【Amazon.co.jp限定】",
+    "プライム会員"
+  ],
+  "case_sensitive": false,
+  "log_removals": true,
+  "notes": "旧NG_keywords.txtからマージ済み"
+}

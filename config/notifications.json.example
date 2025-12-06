@@ -1,0 +1,51 @@
+{
+  "enabled": false,
+  "method": "chatwork",
+  "chatwork": {
+    "api_token": "YOUR_CHATWORK_API_TOKEN_HERE",
+    "room_id": "YOUR_ROOM_ID_HERE",
+    "_comment": "Chatwork APIトークン: サービス連携 > API Token > 新しいトークンを発行"
+  },
+  "line": {
+    "token": "YOUR_LINE_NOTIFY_TOKEN_HERE",
+    "_comment": "LINE Notify（2025年3月31日終了予定）: https://notify-bot.line.me/"
+  },
+  "discord": {
+    "webhook_url": "https://discord.com/api/webhooks/YOUR_WEBHOOK_URL_HERE",
+    "_comment": "Discord Webhookの作成方法: サーバー設定 > 連携サービス > ウェブフック"
+  },
+  "slack": {
+    "webhook_url": "https://hooks.slack.com/services/YOUR_WEBHOOK_URL_HERE",
+    "_comment": "Slack Webhookの作成方法: https://api.slack.com/messaging/webhooks"
+  },
+  "email": {
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "from_email": "your-email@gmail.com",
+    "to_email": "your-email@gmail.com",
+    "password": "your-app-password",
+    "_comment": "Gmailの場合、アプリパスワードを使用: https://support.google.com/accounts/answer/185833"
+  },
+  "events": {
+    "daemon_start": true,
+    "daemon_stop": true,
+    "task_success": false,
+    "task_completion": true,
+    "task_failure": true,
+    "retry_exhausted": true,
+    "service_restart": true,
+    "quota_exceeded": true,
+    "rate_limit_error": true,
+    "_comments": {
+      "daemon_start": "デーモン起動時に通知",
+      "daemon_stop": "デーモン停止時に通知",
+      "task_success": "タスク成功時に通知（頻繁なので通常はfalse）",
+      "task_completion": "タスク完了時に詳細レポートを通知（処理件数、更新件数、次回実行予定時刻など）",
+      "task_failure": "タスク失敗時に通知",
+      "retry_exhausted": "リトライ回数上限到達時に通知",
+      "service_restart": "サービス再起動時に通知",
+      "quota_exceeded": "SP-API QuotaExceededエラー発生時に通知（ISSUE #006対応）",
+      "rate_limit_error": "APIレート制限エラー発生時に通知"
+    }
+  }
+}
