@@ -3,9 +3,9 @@
 
 定期的にAmazon在庫・価格を取得し、複数プラットフォームと同期します。
 
-機能:
-- キャッシュ検証と差分補完（SP-API → キャッシュ、1回のみ実行）
-- 価格同期（キャッシュ → 各プラットフォーム、並列実行）
+機能 (ISSUE_028 & ISSUE_029対応):
+- Phase 1: SP-API → Master DB（全ASINの価格・在庫を一括更新、1回のみ実行）
+- Phase 2: Master DB → 各プラットフォーム（並列実行）
 - 在庫同期（visibility更新）
 
 使用例:
@@ -21,7 +21,7 @@
     # BASEのみ
     python scheduled_tasks/sync_inventory_daemon.py --platforms base
 
-    # 既存キャッシュを使用（SP-API処理をスキップ、テスト用）
+    # 既存Master DBを使用（SP-API処理をスキップ、テスト用）
     python scheduled_tasks/sync_inventory_daemon.py --skip-cache-update --dry-run
 
     # 少量テスト（5件のみ処理）
@@ -32,10 +32,15 @@ import sys
 from pathlib import Path
 import argparse
 import os
-import msvcrt  # Windows用ファイルロック
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any
 import time
+
+# プラットフォーム別のファイルロックモジュールをインポート
+if sys.platform == 'win32':
+    import msvcrt  # Windows用ファイルロック
+else:
+    import fcntl  # Linux/Unix用ファイルロック
 
 # Windows環境でのUTF-8エンコーディング強制設定
 if sys.stdout.encoding != 'utf-8':
@@ -54,20 +59,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scheduled_tasks.daemon_base import DaemonBase
 from inventory.scripts.sync_inventory import InventorySync
 from platforms.ebay.scripts.sync_prices import EbayPriceSync
+from integrations.amazon.sp_api_client import AmazonSPAPIClient
+from integrations.amazon.config import SP_API_CREDENTIALS
+from inventory.core.master_db import MasterDB
 
 
 class SyncInventoryDaemon(DaemonBase):
     """
     在庫同期デーモン（マルチプラットフォーム並列処理対応）
 
-    定期的に以下の処理を実行します:
-    1. Amazon SP-APIから最新の価格・在庫情報を取得（キャッシュベース、1回のみ実行）
+    定期的に以下の処理を実行します (ISSUE_028 & ISSUE_029対応):
+    1. Amazon SP-APIから最新の価格・在庫情報を取得（Master DBベース、1回のみ実行）
     2. 各プラットフォームの価格を並列同期（BASE、eBay等）
     3. 各プラットフォームの在庫状況（visibility）を並列同期
 
     アーキテクチャ:
-        Phase 1: SP-API → キャッシュ（シリアル処理、レート制限対策）
-        Phase 2: キャッシュ → 各プラットフォーム（並列処理、ThreadPoolExecutor）
+        Phase 1: SP-API → Master DB（シリアル処理、全ASINの価格・在庫を一括更新）
+        Phase 2: Master DB → 各プラットフォーム（並列処理、ThreadPoolExecutor）
     """
 
     def __init__(
@@ -91,22 +99,23 @@ class SyncInventoryDaemon(DaemonBase):
         lock_dir.mkdir(exist_ok=True)
         self.lock_file_path = lock_dir / 'sync_inventory_daemon.lock'
 
-        print(f"[LOCK] ロックファイル取得試行: {self.lock_file_path} - PID: {os.getpid()}", flush=True)
-
         try:
             # ロックファイルを開く（存在しない場合は作成）
             self.lock_file = open(self.lock_file_path, 'w')
-            # Windows用ファイルロック取得（非ブロッキング）
-            msvcrt.locking(self.lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+
+            # プラットフォーム別のファイルロック取得（非ブロッキング）
+            if sys.platform == 'win32':
+                # Windows用ファイルロック
+                msvcrt.locking(self.lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                # Linux/Unix用ファイルロック（排他ロック、非ブロッキング）
+                fcntl.flock(self.lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
             # ロック成功 - PIDを書き込む
             self.lock_file.write(f"{os.getpid()}\n")
             self.lock_file.flush()
-            print(f"[LOCK] ロック取得成功 - PID: {os.getpid()}", flush=True)
-        except (IOError, OSError) as e:
-            print(f"[LOCK] エラー: 別のインスタンスが既に実行中です", flush=True)
-            print(f"[LOCK] ロックファイル: {self.lock_file_path}", flush=True)
-            print(f"[LOCK] 詳細: {e}", flush=True)
-            print(f"[LOCK] このプロセスを終了します - PID: {os.getpid()}", flush=True)
+        except (IOError, OSError, BlockingIOError) as e:
+            print(f"エラー: 別のインスタンスが既に実行中です（ロックファイル: {self.lock_file_path}）", flush=True)
             sys.exit(1)
 
         super().__init__(
@@ -126,6 +135,29 @@ class SyncInventoryDaemon(DaemonBase):
         self.dry_run = dry_run
         self.skip_cache_update = skip_cache_update
         self.max_items = max_items
+
+        # SP-APIクライアントの初期化（Phase 1用）
+        try:
+            if all(SP_API_CREDENTIALS.values()):
+                # _shutdown_event を渡して、Ctrl+Cで即座に終了できるようにする
+                # threading.Event はシグナル処理に対応しており、Event.wait() は即座に中断可能
+                self.sp_api_client = AmazonSPAPIClient(
+                    SP_API_CREDENTIALS,
+                    shutdown_event=self._shutdown_event
+                )
+                self.sp_api_available = True
+                self.logger.info("SP-APIクライアント初期化完了（Phase 1用、シャットダウン対応）")
+            else:
+                self.logger.warning("SP-API認証情報が不足しています")
+                self.sp_api_client = None
+                self.sp_api_available = False
+        except Exception as e:
+            self.logger.error(f"SP-APIクライアント初期化失敗: {e}")
+            self.sp_api_client = None
+            self.sp_api_available = False
+
+        # Master DBの初期化（Phase 1用）
+        self.master_db = MasterDB()
 
         # プラットフォーム別のSyncインスタンスを事前作成
         self.sync_instances = {}
@@ -171,22 +203,28 @@ class SyncInventoryDaemon(DaemonBase):
             for platform in self.platforms:
                 self._log_platform_accounts(platform)
 
-            # Phase 1: SP-API → キャッシュ（シリアル処理、1回のみ）
+            # Phase 1: SP-API → Master DB（シリアル処理、1回のみ）
             # skip_cache_updateが有効な場合はスキップ
             if self.skip_cache_update:
                 self.logger.info("\n" + "=" * 70)
-                self.logger.info("【Phase 1】SP-API → キャッシュ同期: スキップ")
-                self.logger.info("既存のキャッシュデータを使用します")
+                self.logger.info("【Phase 1】SP-API → Master DB同期: スキップ")
+                self.logger.info("既存のMaster DBデータを使用します")
                 self.logger.info("=" * 70)
             else:
-                # このフェーズは全プラットフォーム共通のため、1回だけ実行
-                # InventorySyncのrun_full_syncが内部でSP-APIからキャッシュへの同期を実施
-                # ここでは明示的な処理は不要（各プラットフォームの同期処理内で実施される）
-                pass
+                # ISSUE_028対応: 全ASINの価格・在庫を一括更新
+                self.logger.info("\n" + "=" * 70)
+                self.logger.info("【Phase 1】SP-API → Master DB同期（全プラットフォーム共通）")
+                self.logger.info("=" * 70)
+                self._run_phase1_sp_api_sync()
 
-            # Phase 2: キャッシュ → 各プラットフォーム（並列処理）
+            # シャットダウン要求チェック（Phase 1後、Phase 2前）
+            if self.shutdown_requested:
+                self.logger.info("シャットダウン要求を検出（Phase 2をスキップ）")
+                return False
+
+            # Phase 2: Master DB → 各プラットフォーム（並列処理）
             self.logger.info("\n" + "=" * 70)
-            self.logger.info("【Phase 2】キャッシュ → 各プラットフォーム同期（並列処理）")
+            self.logger.info("【Phase 2】Master DB → 各プラットフォーム同期（並列処理）")
             self.logger.info("=" * 70)
 
             # ThreadPoolExecutorで並列実行
@@ -198,16 +236,44 @@ class SyncInventoryDaemon(DaemonBase):
                     for platform in self.platforms
                 }
 
-                # 結果を収集
-                for future in as_completed(future_to_platform):
-                    platform = future_to_platform[future]
-                    try:
-                        stats = future.result()
-                        platform_stats[platform] = stats
-                        self.logger.info(f"✓ {platform.upper()} 同期完了")
-                    except Exception as e:
-                        self.logger.error(f"✗ {platform.upper()} 同期エラー: {e}", exc_info=True)
-                        platform_stats[platform] = {'error': str(e)}
+                # 結果を収集（シグナル応答性を向上するため、短いタイムアウトでポーリング）
+                remaining_futures = set(future_to_platform.keys())
+                while remaining_futures:
+                    # シャットダウン要求チェック
+                    if self.shutdown_requested:
+                        self.logger.info("シャットダウン要求を検出（並列処理中断）")
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        return False
+
+                    # 短いタイムアウトで完了済みタスクをチェック
+                    done_futures = set()
+                    for future in remaining_futures:
+                        if future.done():
+                            done_futures.add(future)
+
+                    # 完了したタスクの結果を処理
+                    for future in done_futures:
+                        platform = future_to_platform[future]
+                        try:
+                            stats = future.result()
+                            platform_stats[platform] = stats
+                            self.logger.info(f"✓ {platform.upper()} 同期完了")
+                        except Exception as e:
+                            self.logger.error(f"✗ {platform.upper()} 同期エラー: {e}", exc_info=True)
+                            platform_stats[platform] = {'error': str(e)}
+
+                    # 完了したタスクを削除
+                    remaining_futures -= done_futures
+
+                    # 短い待機（CPU使用率を抑える、割り込み可能）
+                    if remaining_futures:
+                        try:
+                            time.sleep(0.1)
+                        except KeyboardInterrupt:
+                            self.logger.info("並列処理中にKeyboardInterruptを受け取りました")
+                            self.shutdown_requested = True
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            return False
 
             # 統計情報の集計と表示
             duration = time.time() - start_time
@@ -280,10 +346,12 @@ class SyncInventoryDaemon(DaemonBase):
         try:
             if platform == 'base':
                 # BASE: 統合同期を実行
-                # skip_cache_updateが有効な場合は、キャッシュ更新をスキップ
+                # Phase 2では常にskip_cache_update=Trueを渡す
+                # （Phase 1で既にMaster DBを更新済み、またはユーザーが明示的にスキップを指定）
+                # これにより、InventorySyncの内部SP-APIクライアントによる重複呼び出しを防ぐ
                 stats = self.sync_instances[platform].run_full_sync(
                     platform=platform,
-                    skip_cache_update=self.skip_cache_update,
+                    skip_cache_update=True,  # ISSUE_028: 常にTrue（Phase 1で更新済み）
                     max_items=self.max_items
                 )
             elif platform == 'ebay':
@@ -305,6 +373,95 @@ class SyncInventoryDaemon(DaemonBase):
 
         except Exception as e:
             self.logger.error(f"[{platform.upper()}] 同期処理でエラー: {e}", exc_info=True)
+            raise
+
+    def _run_phase1_sp_api_sync(self) -> None:
+        """
+        Phase 1: SP-API → Master DB同期（全ASINの価格・在庫を一括更新）
+
+        ISSUE_028対応: SP-API通信の重複を解消するため、Phase 1で全ASINを一括更新します。
+        - 全プラットフォームの全ASINを収集
+        - SP-APIバッチで価格・在庫を一括取得
+        - Master DBに保存
+        """
+        if not self.sp_api_available:
+            self.logger.error("SP-APIクライアントが利用できません")
+            return
+
+        try:
+            # 1. 全プラットフォームの全ASINを収集（status='listed'）
+            self.logger.info("全プラットフォームの出品中商品のASINを収集中...")
+            all_asins = set()
+
+            # listingsテーブルから直接取得
+            with self.master_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT DISTINCT asin
+                    FROM listings
+                    WHERE status = 'listed'
+                """)
+                rows = cursor.fetchall()
+                for row in rows:
+                    all_asins.add(row[0])
+
+            if not all_asins:
+                self.logger.warning("出品中商品が見つかりませんでした")
+                return
+
+            asins_list = list(all_asins)
+            if self.max_items:
+                asins_list = asins_list[:self.max_items]
+
+            self.logger.info(f"収集完了: {len(asins_list)}件のASIN")
+
+            # 2. SP-APIバッチで価格・在庫を一括取得
+            self.logger.info(f"\nSP-APIバッチで価格・在庫を取得中...")
+            self.logger.info(f"  バッチサイズ: 20件/リクエスト")
+            batch_count = (len(asins_list) + 19) // 20
+            self.logger.info(f"  予想リクエスト数: {batch_count}回")
+            estimated_seconds = batch_count * 12
+            self.logger.info(f"  予想処理時間: {estimated_seconds:.0f}秒 ({estimated_seconds/60:.1f}分)")
+
+            price_results = self.sp_api_client.get_prices_batch(asins_list, batch_size=20)
+
+            # シャットダウン要求チェック（SP-API処理後）
+            if self.shutdown_requested:
+                self.logger.info("シャットダウン要求を検出（Phase 1中断 - SP-API処理後）")
+                return  # Phase 1を早期終了
+
+            # 3. Master DBに保存
+            self.logger.info(f"\nMaster DBに価格・在庫情報を保存中...")
+            success_count = 0
+            error_count = 0
+
+            for asin, price_info in price_results.items():
+                # シャットダウン要求チェック（DB保存ループ内）
+                if self.shutdown_requested:
+                    self.logger.info(f"シャットダウン要求を検出（Master DB保存中断 - {success_count}件保存済み）")
+                    break
+
+                try:
+                    if price_info and price_info.get('price') is not None:
+                        self.master_db.update_amazon_info(
+                            asin=asin,
+                            price_jpy=int(price_info['price']),
+                            in_stock=price_info.get('in_stock', False)
+                        )
+                        success_count += 1
+                    else:
+                        error_count += 1
+                except Exception as e:
+                    self.logger.error(f"Master DB更新エラー ({asin}): {e}")
+                    error_count += 1
+
+            self.logger.info(f"\n【Phase 1完了】")
+            self.logger.info(f"  成功: {success_count}件")
+            self.logger.info(f"  失敗: {error_count}件")
+            self.logger.info(f"  合計: {len(price_results)}件")
+
+        except Exception as e:
+            self.logger.error(f"Phase 1処理でエラー: {e}", exc_info=True)
             raise
 
     def _log_platform_accounts(self, platform: str) -> None:
@@ -390,13 +547,11 @@ class SyncInventoryDaemon(DaemonBase):
         """デストラクタ: ロックファイルをクリーンアップ"""
         try:
             if hasattr(self, 'lock_file'):
-                print(f"[LOCK] ロックファイル解放 - PID: {os.getpid()}", flush=True)
                 self.lock_file.close()
             if hasattr(self, 'lock_file_path') and self.lock_file_path.exists():
                 self.lock_file_path.unlink()
-                print(f"[LOCK] ロックファイル削除: {self.lock_file_path}", flush=True)
-        except Exception as e:
-            print(f"[LOCK] クリーンアップ中にエラー: {e}", flush=True)
+        except Exception:
+            pass  # デストラクタ内ではエラーを無視
 
 
 def main():

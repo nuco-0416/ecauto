@@ -40,18 +40,22 @@ class AmazonSPAPIClient:
     - Prime + FBA発送 + 即時発送可能 (availabilityType=NOW) の商品をフィルタリング
     """
 
-    def __init__(self, credentials: Dict[str, str]):
+    def __init__(self, credentials: Dict[str, str], shutdown_event=None):
         """
         Args:
             credentials: SP-API認証情報
                 - refresh_token: リフレッシュトークン
                 - lwa_app_id: LWA App ID
                 - lwa_client_secret: LWA Client Secret
+            shutdown_event: threading.Event - シャットダウン通知用のイベント（デーモンから渡される）
+                イベントがセットされた場合、処理を中断する
+                threading.Event.wait() はシグナルで即座に中断可能
         """
         import os
 
         self.credentials = credentials
         self.marketplace = Marketplaces.JP
+        self.shutdown_event = shutdown_event
 
         # アクセストークン管理
         self.access_token = None
@@ -95,36 +99,73 @@ class AmazonSPAPIClient:
         # スレッドセーフなレート制限のためのロック
         self._rate_limit_lock = threading.Lock()
 
-    def _wait_for_rate_limit(self, interval: float = None):
+    def _interruptible_sleep(self, total_seconds: float) -> bool:
         """
-        レート制限のための待機（スレッドセーフ）
+        割り込み可能なsleep（デーモン用）
+
+        threading.Event.wait() を使用することで、シグナルで即座に中断可能。
+        Event.wait(timeout) はタイムアウトまで待機し、イベントがセットされた場合は即座に返る。
+
+        Args:
+            total_seconds: 待機時間（秒）
+
+        Returns:
+            bool: 正常に待機完了した場合True、シャットダウン要求で中断された場合False
+        """
+        # shutdown_eventが設定されていない場合は通常のsleep
+        if self.shutdown_event is None:
+            time.sleep(total_seconds)
+            return True
+
+        # Event.wait() はシグナルで即座に中断可能
+        # タイムアウトまで待機し、イベントがセットされたらTrueを返す
+        # タイムアウトしたらFalseを返す
+        interrupted = self.shutdown_event.wait(timeout=total_seconds)
+
+        if interrupted:
+            logger.info(f"シャットダウン要求を検出（SP-API待機中断）: event.is_set()={self.shutdown_event.is_set()}")
+            return False
+
+        return True
+
+    def _wait_for_rate_limit(self, interval: float = None) -> bool:
+        """
+        レート制限のための待機（スレッドセーフ、割り込み可能）
 
         Args:
             interval: 待機間隔（秒）。Noneの場合はself.min_intervalを使用
+
+        Returns:
+            bool: 正常に待機完了した場合True、シャットダウン要求で中断された場合False
         """
         if interval is None:
             interval = self.min_interval
 
+        # ロックの中で待機時間を計算
+        wait_time = None
         with self._rate_limit_lock:
             current_time = time.time()
 
             # 初回リクエストの場合はlast_request_timeがNone
             if self.last_request_time is None:
-                print(f"[RATE_LIMIT_DEBUG] 初回リクエスト - 待機なし (interval={interval}秒)", flush=True)
                 self.last_request_time = current_time
-                return
+                return True
 
             time_since_last_request = current_time - self.last_request_time
 
             if time_since_last_request < interval:
                 wait_time = interval - time_since_last_request
-                print(f"[RATE_LIMIT_DEBUG] 前回から {time_since_last_request:.2f}秒経過 → {wait_time:.2f}秒待機 (interval={interval}秒)", flush=True)
-                time.sleep(wait_time)
-            else:
-                print(f"[RATE_LIMIT_DEBUG] 前回から {time_since_last_request:.2f}秒経過 → 待機不要 (interval={interval}秒)", flush=True)
 
+        # ロックの外で待機（シグナル処理を妨げない）
+        if wait_time is not None and wait_time > 0:
+            if not self._interruptible_sleep(wait_time):
+                # シャットダウン要求で中断された場合
+                return False
+
+        # 待機完了後、ロックを再取得してlast_request_timeを更新
+        with self._rate_limit_lock:
             self.last_request_time = time.time()
-            print(f"[RATE_LIMIT_DEBUG] 次回リクエスト可能: {interval}秒後", flush=True)
+            return True
 
     def _notify_quota_exceeded(self, asin: str, error_message: str):
         """
@@ -557,7 +598,10 @@ class AmazonSPAPIClient:
                     if attempt < max_retries - 1:
                         # 最後のリトライでなければ待機
                         print(f"     ... {retry_delay}秒待機してリトライします。")
-                        time.sleep(retry_delay)
+                        if not self._interruptible_sleep(retry_delay):
+                            # シャットダウン要求で中断された場合
+                            logger.info(f"シャットダウン要求により、リトライを中断しました（ASIN={asin}）")
+                            return None
                         continue
                     else:
                         # リトライ上限に達した
@@ -571,7 +615,10 @@ class AmazonSPAPIClient:
                     if attempt < max_retries - 1:
                         # 最後のリトライでなければ待機してリトライ
                         print(f"     ... {retry_delay}秒待機してリトライします。")
-                        time.sleep(retry_delay)
+                        if not self._interruptible_sleep(retry_delay):
+                            # シャットダウン要求で中断された場合
+                            logger.info(f"シャットダウン要求により、リトライを中断しました（ASIN={asin}）")
+                            return None
                         continue
                     else:
                         print(f"  -> [重要] リトライ上限({max_retries}回)に達しました。ASIN={asin}")
@@ -623,11 +670,14 @@ class AmazonSPAPIClient:
         for batch_idx, batch_asins in enumerate(batches, 1):
             # レート制限待機（全てのバッチで実行 - ISSUE #005 & #006対応）
             # 前回のリクエストから12秒以上経過していることを保証
-            self._wait_for_rate_limit()
+            if not self._wait_for_rate_limit():
+                # シャットダウン要求で中断された場合
+                logger.info(f"シャットダウン要求により、バッチ処理を中断しました（{batch_idx-1}/{len(batches)}完了）")
+                break
 
             # ISSUE #011対応: バッチリクエスト開始ログ
             batch_start_time = time.time()
-            logger.info(f"[DEBUG] バッチ {batch_idx}/{len(batches)}: {len(batch_asins)}件のASINをリクエスト開始")
+            logger.info(f"バッチ {batch_idx}/{len(batches)}: {len(batch_asins)}件のASINをリクエスト開始")
 
             # バッチリクエストを作成
             requests = []
@@ -822,7 +872,7 @@ class AmazonSPAPIClient:
 
                 # ISSUE #011対応: バッチ処理成功時のログ（所要時間と統計）
                 batch_elapsed = time.time() - batch_start_time
-                logger.info(f"[DEBUG] バッチ {batch_idx}/{len(batches)} 完了: "
+                logger.info(f"バッチ {batch_idx}/{len(batches)} 完了: "
                            f"所要時間 {batch_elapsed:.2f}秒, "
                            f"成功 {batch_success_count}件, 失敗 {batch_failure_count}件")
 

@@ -1,0 +1,80 @@
+◆メモ用
+
+○基本コマンド
+Allow this bash command
+python check_queue_accounts.py
+venvScriptspython.exe debug_sync_visibility_issue.py
+venv/Scripts/python.exe debug_sync_visibility_issue.py
+cd "C:\Users\hiroo\Documents\GitHub\ecauto" && "venv/Scripts/python.exe" platforms/ebay/core/api_client.py
+del debug_sync_visibility_issue.py
+cd "C:\Users\hiroo\Documents\GitHub\ecauto" && "venv/Scripts/python.exe" platforms/ebay/core/category_mapper.py
+cd "C:\Users\hiroo\Documents\GitHub\ecauto" && "venv/Scripts/python.exe" platforms/ebay/core/policies.py
+cd "C:\Users\hiroo\Documents\GitHub\ecauto" && "venv/Scripts/python.exe" platforms/ebay/scripts/test_phase2.py
+"venv/Scripts/python.exe" platforms/ebay/scripts/test_phase4.py
+powershell -Command "(Get-Content logs\sync_inventory.log | Select-String 'キャッシュが存在しません').Count"
+
+
+Allow write to C:\Users\hiroo\Documents\GitHub\ecauto\*
+
+Allow fetching url
+*
+
+○DB関連
+
+
+
+
+◆小さいISSUE
+verify_sku_registration.py
+OUT
+Exit code 1
+Traceback (most recent call last):
+  File "C:\Users\hiroo\Documents\GitHub\ecauto\verify_sku_registration.py", line 16, in <module>
+    from platforms.base.core.api_client import BaseAPIClient
+  File "C:\Users\hiroo\Documents\GitHub\ecauto\platforms\base\core\__init__.py", line 7, in <module>
+    from .api_client import BaseAPIClient
+  File "C:\Users\hiroo\Documents\GitHub\ecauto\platforms\base\core\api_client.py", line 16, in <module>
+    from accounts.manager import AccountManager
+  File "C:\Users\hiroo\Documents\GitHub\ecauto\platforms\base\accounts\__init__.py", line 7, in <module>
+    from .manager import AccountManager
+  File "C:\Users\hiroo\Documents\GitHub\ecauto\platforms\base\accounts\manager.py", line 14, in <module>
+    from core.auth import BaseOAuthClient
+  File "C:\Users\hiroo\Documents\GitHub\ecauto\platforms\base\core\__init__.py", line 7, in <module>
+    from .api_client import BaseAPIClient
+  File "C:\Users\hiroo\Documents\GitHub\ecauto\platforms\base\core\api_client.py", line 16, in <module>
+    from accounts.manager import AccountManager
+ImportError: cannot import name 'AccountManager' from partially initialized module 'accounts.manager' (most likely due to a circular import) (C:\Users\hiroo\Documents\GitHub\ecauto\platforms\base\accounts\manager.py)
+また循環インポートエラーが発生しました。これは既存のコードの問題のようですが、実際のアップロード処理では動作しているので、スクリプトの初期化方法を変更する必要があります。より単純な方法として、データベースから直接確認する方法に変更します。
+
+=====
+
+問題の概要
+373件のASINが以下の不整合な状態になっています：
+✅ master.db の products テーブルに登録済み
+✅ master.db の listings テーブルにも登録済み
+❌ sourcing_candidates の status が 'candidate' のまま（本来は 'imported' であるべき）
+
+
+推測される原因
+import_candidates_to_master.py の _update_sourcing_status メソッドが正しく実行されなかったか、エラーが発生した可能性があります。
+
+=====
+
+
+api_client.pyのget_itemメソッドを修正する必要があります。
+
+BASE APIの/items/detailエンドポイントは：- URLパス内のパラメータとしてitem_idを指定する必要がある
+正しい形式: GET /1/items/detail/{item_id}
+現在のコード: GET /1/items/detail?item_id={item_id} （間違い）
+
+
+-----
+
+◆プロンプト
+
+・sourcing/ →　upload_queue
+いま、sourcingに登録されているASINの状況と、マスタDBに登録されている商品の状況ってどうなっているか教えてもらえる？
+
+C:\Users\hiroo\Documents\GitHub\ecauto\README.md
+
+sourcing/ に滞留しているASINがあればupload_queまでの登録を実施したいので、まずは状況の確認をお願いしたい

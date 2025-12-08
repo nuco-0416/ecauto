@@ -36,7 +36,6 @@ else:
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from inventory.scripts.validate_and_fill_cache import CacheValidator
 from platforms.base.scripts.sync_prices import PriceSync
 from inventory.scripts.sync_stock_visibility import StockVisibilitySync
 
@@ -53,33 +52,21 @@ class InventorySync:
         Args:
             dry_run: Trueの場合、実際の更新は行わない
         """
-        logger.info(f"[DEBUG] InventorySync.__init__ 開始 (dry_run={dry_run})")
         self.dry_run = dry_run
 
         # 各コンポーネント
-        logger.info("[DEBUG] CacheValidator初期化中...")
-        self.cache_validator = CacheValidator(dry_run=dry_run)
-        logger.info("[DEBUG] CacheValidator初期化完了")
-
-        logger.info("[DEBUG] PriceSync初期化中...")
         self.price_sync = PriceSync()
-        logger.info("[DEBUG] PriceSync初期化完了")
-
-        logger.info("[DEBUG] StockVisibilitySync初期化中...")
         self.stock_sync = StockVisibilitySync()
-        logger.info("[DEBUG] StockVisibilitySync初期化完了")
 
         # 統計情報
         self.stats = {
             'start_time': None,
             'end_time': None,
             'duration_seconds': 0,
-            'cache_validation': {},
             'price_sync': {},
             'stock_sync': {},
             'total_errors': 0
         }
-        logger.info("[DEBUG] InventorySync.__init__ 完了")
 
     def run_full_sync(self, platform: str = 'base', skip_cache_update: bool = False, max_items: int = None) -> Dict[str, Any]:
         """
@@ -93,11 +80,8 @@ class InventorySync:
         Returns:
             dict: 実行結果
         """
-        logger.info(f"[DEBUG] run_full_sync 開始 (platform={platform})")
         self.stats['start_time'] = datetime.now()
-        logger.info(f"[DEBUG] start_time設定完了: {self.stats['start_time']}")
 
-        logger.info("[DEBUG] ログ出力開始...")
         logger.info("=" * 70)
         logger.info("統合インベントリ同期を開始")
         logger.info("=" * 70)

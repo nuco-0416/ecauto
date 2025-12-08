@@ -15,14 +15,12 @@ import sys
 from pathlib import Path
 import time
 import signal
+import threading
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 import traceback
 import os
-
-# デバッグ: プロセスID出力
-print(f"[DEBUG] daemon_base.py - モジュール読み込み開始 - PID: {os.getpid()}", flush=True)
 
 # パスを追加
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -73,8 +71,6 @@ class DaemonBase(ABC):
             retry_delay_seconds: リトライ時の待機時間（秒、デフォルト: 60）
             enable_notifications: 通知機能を有効にするか（デフォルト: True）
         """
-        print(f"[DEBUG] DaemonBase.__init__() 開始 - PID: {os.getpid()}", flush=True)
-
         self.name = name
         self.interval_seconds = interval_seconds
         self.max_retries = max_retries
@@ -83,8 +79,7 @@ class DaemonBase(ABC):
         # フラグ
         self.running = False
         self.shutdown_requested = False
-
-        print(f"[DEBUG] DaemonBase - setup_logger 呼び出し前 - PID: {os.getpid()}", flush=True)
+        self._shutdown_event = threading.Event()  # シグナル受信時に即座に待機を中断するため
 
         # ロガーセットアップ
         self.logger = setup_logger(
@@ -93,12 +88,9 @@ class DaemonBase(ABC):
             console_output=True
         )
 
-        print(f"[DEBUG] DaemonBase - setup_logger 完了 - PID: {os.getpid()}", flush=True)
-
         # 通知機能のセットアップ
         self.notifier = None
         if enable_notifications and NOTIFIER_AVAILABLE:
-            print(f"[DEBUG] DaemonBase - Notifier初期化開始 - PID: {os.getpid()}", flush=True)
             try:
                 self.notifier = Notifier()
                 if self.notifier.config.get('enabled', False):
@@ -106,25 +98,71 @@ class DaemonBase(ABC):
             except Exception as e:
                 self.logger.warning(f"通知機能の初期化に失敗: {e}")
                 self.notifier = None
-            print(f"[DEBUG] DaemonBase - Notifier初期化完了 - PID: {os.getpid()}", flush=True)
 
         # シグナルハンドラの設定
-        print(f"[DEBUG] DaemonBase - シグナルハンドラ設定前 - PID: {os.getpid()}", flush=True)
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
-        print(f"[DEBUG] DaemonBase.__init__() 完了 - PID: {os.getpid()}", flush=True)
 
     def _signal_handler(self, signum, frame):
         """
         シグナルハンドラ（Ctrl+C、kill等）
 
+        シグナルハンドラ内ではスレッドセーフでない操作（ロギング等）は
+        避け、単純なフラグ操作のみを行う。
+
         Args:
             signum: シグナル番号
             frame: フレーム情報
         """
-        signal_name = signal.Signals(signum).name
-        self.logger.info(f"シグナル {signal_name} ({signum}) を受信しました")
+        # シグナルハンドラ内では最小限の処理のみ行う
+        # （ロギングはスレッドセーフでない可能性があるため避ける）
         self.shutdown_requested = True
+        self._shutdown_event.set()  # 待機中のスレッドを即座に起こす
+
+        # 安全なwrite（シグナル安全）
+        try:
+            import sys
+            sys.stderr.write(f"\n[SIGNAL] シグナル {signum} を受信しました。シャットダウン開始...\n")
+            sys.stderr.flush()
+        except:
+            pass  # シグナルハンドラ内ではエラーを無視
+
+    def _interruptible_sleep(self, total_seconds: float) -> bool:
+        """
+        割り込み可能なsleep（シグナル応答性を向上）
+
+        短いポーリング間隔（1秒）でEvent.wait()を繰り返し、
+        shutdown_requestedフラグをチェックすることで、
+        シグナル受信時に最大1秒以内に応答します。
+
+        Args:
+            total_seconds: 待機時間（秒）
+
+        Returns:
+            bool: 正常に待機完了した場合True、シグナルで中断された場合False
+        """
+        POLL_INTERVAL = 1.0  # 1秒ごとにシャットダウン要求をチェック
+        elapsed = 0.0
+
+        while elapsed < total_seconds:
+            # シャットダウン要求をチェック（フラグベース）
+            if self.shutdown_requested:
+                self.logger.info("待機中に停止シグナルを受け取りました（フラグ）")
+                return False
+
+            # 残り時間とポーリング間隔の小さい方を待機
+            remaining = total_seconds - elapsed
+            wait_time = min(POLL_INTERVAL, remaining)
+
+            # Event.wait()で短時間待機
+            interrupted = self._shutdown_event.wait(timeout=wait_time)
+            if interrupted:
+                self.logger.info("待機中に停止シグナルを受け取りました（Event）")
+                return False
+
+            elapsed += wait_time
+
+        return True
 
     @abstractmethod
     def execute_task(self) -> bool:
@@ -172,7 +210,9 @@ class DaemonBase(ABC):
                             f"タスク失敗（{attempt}/{self.max_retries}）"
                             f"{self.retry_delay_seconds}秒後にリトライします..."
                         )
-                        time.sleep(self.retry_delay_seconds)
+                        if not self._interruptible_sleep(self.retry_delay_seconds):
+                            # シグナルで中断された場合
+                            return False
                     else:
                         self.logger.error(
                             f"タスク失敗（最大リトライ回数 {self.max_retries} に到達）"
@@ -204,7 +244,9 @@ class DaemonBase(ABC):
 
                 if attempt < self.max_retries:
                     self.logger.info(f"{self.retry_delay_seconds}秒後にリトライします...")
-                    time.sleep(self.retry_delay_seconds)
+                    if not self._interruptible_sleep(self.retry_delay_seconds):
+                        # シグナルで中断された場合
+                        return False
                 else:
                     self.logger.error(f"最大リトライ回数に到達しました")
                     return False
@@ -218,8 +260,6 @@ class DaemonBase(ABC):
         この関数は無限ループを実行し、定期的に execute_task() を呼び出します。
         Ctrl+C または kill シグナルで停止できます。
         """
-        print(f"[DEBUG] DaemonBase.run() 開始 - PID: {os.getpid()}", flush=True)
-
         self.logger.info("="*60)
         self.logger.info(f"{self.name} デーモン起動")
         self.logger.info("="*60)
@@ -227,8 +267,6 @@ class DaemonBase(ABC):
         self.logger.info(f"最大リトライ回数: {self.max_retries}")
         self.logger.info("停止するには Ctrl+C を押してください")
         self.logger.info("="*60)
-
-        print(f"[DEBUG] DaemonBase - 通知送信前 - PID: {os.getpid()}", flush=True)
 
         # 通知: デーモン起動
         if self.notifier:
@@ -238,8 +276,6 @@ class DaemonBase(ABC):
                 f'デーモンが起動しました。\n実行間隔: {self.interval_seconds}秒',
                 'INFO'
             )
-
-        print(f"[DEBUG] DaemonBase - whileループ開始前 - PID: {os.getpid()}", flush=True)
 
         self.running = True
 
@@ -279,12 +315,9 @@ class DaemonBase(ABC):
                     f"({self.interval_seconds}秒待機...)"
                 )
 
-                # 待機（レガシーシステムと同じパターン）
-                try:
-                    time.sleep(self.interval_seconds)
-                except KeyboardInterrupt:
-                    # sleep中のKeyboardInterruptもキャッチ
-                    self.logger.info("待機中に停止シグナルを受け取りました")
+                # 待機（短い間隔で分割してシグナル応答性を向上）
+                if not self._interruptible_sleep(self.interval_seconds):
+                    # シグナルで中断された場合
                     break
 
             except KeyboardInterrupt:
@@ -303,10 +336,8 @@ class DaemonBase(ABC):
                     f"{self.interval_seconds}秒後にタスクを再実行します..."
                 )
 
-                try:
-                    time.sleep(self.interval_seconds)
-                except KeyboardInterrupt:
-                    self.logger.info("待機中に停止シグナルを受け取りました")
+                if not self._interruptible_sleep(self.interval_seconds):
+                    # シグナルで中断された場合
                     break
 
         # シャットダウン処理

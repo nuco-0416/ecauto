@@ -21,8 +21,8 @@ sys.path.insert(0, str(project_root))
 from inventory.core.master_db import MasterDB
 from inventory.core.product_manager import ProductManager
 from inventory.core.listing_manager import ListingManager
-from inventory.core.cache_manager import AmazonProductCache
 from inventory.core.prohibited_item_checker import ProhibitedItemChecker
+from inventory.core.blocklist_manager import BlocklistManager
 from common.ng_keyword_filter import NGKeywordFilter
 from common.pricing import PriceCalculator
 from shared.utils.sku_generator import generate_sku
@@ -70,15 +70,16 @@ def fetch_prices_batch(asins: list, batch_size: int = 20) -> dict:
         return {}
 
 
-def fetch_product_info_from_sp_api(asin: str, use_sp_api: bool = True, ng_filter: NGKeywordFilter = None, price_info: dict = None) -> dict:
+def fetch_product_info_from_sp_api(asin: str, use_sp_api: bool = True, ng_filter: NGKeywordFilter = None, price_info: dict = None, master_db: MasterDB = None) -> dict:
     """
-    SP-APIから商品情報を取得
+    商品情報を取得（productsテーブル優先、必要に応じてSP-API）
 
     Args:
         asin: 商品ASIN
-        use_sp_api: SP-APIを使用するか（Falseの場合はキャッシュのみ）
+        use_sp_api: SP-APIを使用するか（Falseの場合はproductsテーブルのみ）
         ng_filter: NGキーワードフィルター（Noneの場合はフィルター無効）
         price_info: 事前に取得した価格情報（バッチ処理用、オプション）
+        master_db: MasterDBインスタンス（Noneの場合は新規作成）
 
     Returns:
         dict: 商品情報
@@ -90,19 +91,22 @@ def fetch_product_info_from_sp_api(asin: str, use_sp_api: bool = True, ng_filter
             - amazon_price_jpy: Amazon価格
             - amazon_in_stock: 在庫状況
     """
-    # キャッシュから取得を試みる
-    cache = AmazonProductCache()
-    cached_data = cache.get_product(asin)
+    # MasterDBインスタンスを取得
+    if master_db is None:
+        master_db = MasterDB()
 
-    # キャッシュに価格情報も含まれている場合はそれを返す
-    if cached_data and cached_data.get('amazon_price_jpy') is not None:
+    # productsテーブルから取得を試みる
+    existing_product = master_db.get_product(asin)
+
+    # productsテーブルに価格情報も含まれている場合はそれを返す
+    if existing_product and existing_product.get('amazon_price_jpy') is not None:
         # NGキーワードフィルターを適用
         if ng_filter:
-            cached_data['title_ja'] = ng_filter.filter_title(cached_data.get('title_ja', ''))
-            cached_data['description_ja'] = ng_filter.filter_description(cached_data.get('description_ja', ''))
-        return cached_data
+            existing_product['title_ja'] = ng_filter.filter_title(existing_product.get('title_ja', ''))
+            existing_product['description_ja'] = ng_filter.filter_description(existing_product.get('description_ja', ''))
+        return existing_product
 
-    # SP-APIから取得（キャッシュがないか、価格情報がない場合）
+    # SP-APIから取得（productsテーブルにないか、価格情報がない場合）
     if use_sp_api:
         try:
             from integrations.amazon.config import SP_API_CREDENTIALS
@@ -131,15 +135,24 @@ def fetch_product_info_from_sp_api(asin: str, use_sp_api: bool = True, ng_filter
                     product_info['title_ja'] = ng_filter.filter_title(product_info.get('title_ja', ''))
                     product_info['description_ja'] = ng_filter.filter_description(product_info.get('description_ja', ''))
 
-                # キャッシュに保存
-                cache.set_product(asin, product_info)
+                # productsテーブルに保存（キャッシュは使用しない）
+                master_db.add_product(
+                    asin=asin,
+                    title_ja=product_info.get('title_ja'),
+                    description_ja=product_info.get('description_ja'),
+                    category=product_info.get('category'),
+                    brand=product_info.get('brand'),
+                    images=product_info.get('images'),
+                    amazon_price_jpy=product_info.get('amazon_price_jpy'),
+                    amazon_in_stock=product_info.get('amazon_in_stock')
+                )
                 print(f"  [SP-API] 商品情報取得成功")
                 return product_info
 
         except Exception as e:
             print(f"  警告: SP-API取得エラー - {e}")
 
-    # キャッシュにもSP-APIにもない場合はNoneを返す（ダミーデータは登録しない）
+    # productsテーブルにもSP-APIにもない場合はNoneを返す（ダミーデータは登録しない）
     print(f"  エラー: ASIN {asin} の情報が取得できません。このASINはスキップされます")
     return None
 
@@ -287,22 +300,44 @@ def main():
     asins_to_process = []  # 処理が必要なASINのリスト
 
     for i, asin in enumerate(asins, 1):
-        # 既存チェック（同じプラットフォームでの重複のみチェック）
+        # 既存チェック（同じプラットフォーム・同じアカウントでの重複をチェック）
         if args.skip_existing:
-            # プラットフォーム内での重複チェック
+            # プラットフォーム＆アカウント内での重複チェック
             existing_listings = db.get_listings_by_asin(asin)
-            platform_exists = any(
-                listing['platform'] == args.platform
+            platform_account_exists = any(
+                listing['platform'] == args.platform and listing['account_id'] == args.account_id
                 for listing in existing_listings
             )
-            if platform_exists:
-                print(f"[{i}/{len(asins)}] スキップ: {asin} ({args.platform}に既存)")
+            if platform_account_exists:
+                print(f"[{i}/{len(asins)}] スキップ: {asin} ({args.platform}/{args.account_id}に既存)")
                 skip_count += 1
                 continue
 
         asins_to_process.append(asin)
 
     print(f"処理対象: {len(asins_to_process)}件（スキップ: {skip_count}件）")
+
+    # ステップ1.2: ブロックリストチェック
+    blocklist_blocked_count = 0
+    if asins_to_process:
+        print(f"\nステップ1.2: ブロックリストチェック中... ({len(asins_to_process)}件)")
+        blocklist_manager = BlocklistManager()
+        asins_after_blocklist = []
+
+        for i, asin in enumerate(asins_to_process, 1):
+            if blocklist_manager.is_blocked(asin):
+                block_info = blocklist_manager.get_block_info(asin)
+                print(f"[{i}/{len(asins_to_process)}] ブロック: {asin} (ブロックリスト登録済み)")
+                print(f"  理由: {block_info.get('reason', '不明')}")
+                print(f"  削除日: {block_info.get('deleted_at', '不明')}")
+                blocklist_blocked_count += 1
+                continue
+
+            asins_after_blocklist.append(asin)
+
+        asins_to_process = asins_after_blocklist
+        print(f"ブロックリストチェック完了: {blocklist_blocked_count}件をブロック")
+        print(f"処理対象: {len(asins_to_process)}件")
 
     # ステップ1.5: 禁止商品チェック（オプション）
     blocked_count = 0
@@ -314,13 +349,12 @@ def main():
         asins_after_check = []
 
         for i, asin in enumerate(asins_to_process, 1):
-            # キャッシュから商品情報を取得
-            cache = AmazonProductCache()
-            cached_data = cache.get_product(asin)
+            # productsテーブルから商品情報を取得
+            product_data = db.get_product(asin)
 
-            if cached_data:
-                # キャッシュデータでチェック
-                result = checker.check_product(cached_data)
+            if product_data:
+                # 商品データでチェック
+                result = checker.check_product(product_data)
 
                 if result['risk_score'] >= args.prohibited_threshold:
                     print(f"[{i}/{len(asins_to_process)}] ブロック: {asin} (リスクスコア: {result['risk_score']})")
@@ -447,7 +481,8 @@ def main():
                 asin,
                 use_sp_api=args.use_sp_api,
                 ng_filter=ng_filter,
-                price_info=price_info
+                price_info=price_info,
+                master_db=db
             )
 
             # 商品情報が取得できなかった場合はスキップ（ダミーデータは登録しない）
@@ -525,6 +560,10 @@ def main():
     print("=" * 60)
     print(f"成功: {success_count}件")
     print(f"スキップ: {skip_count}件")
+    if blocklist_blocked_count > 0:
+        print(f"ブロックリスト拒否: {blocklist_blocked_count}件")
+    if blocked_count > 0:
+        print(f"禁止商品ブロック: {blocked_count}件")
     print(f"失敗: {error_count}件")
     print(f"合計: {len(asins)}件")
     print("=" * 60)

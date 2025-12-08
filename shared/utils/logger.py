@@ -91,13 +91,42 @@ def setup_logger(
     # これにより、すべての子logger（__name__を使用しているlogger）も
     # 自動的にログを出力するようになる
     root_logger = logging.getLogger()
+    root_logger.setLevel(level)
 
-    # ルートloggerにまだhandlerが設定されていない場合のみ追加
-    if not root_logger.handlers:
-        root_logger.setLevel(level)
-        root_logger.addHandler(file_handler)
-        if console_output:
-            root_logger.addHandler(console_handler)
+    # ルートloggerに同じファイルへのハンドラがあるかチェック
+    # （他のライブラリが先にハンドラを設定している場合に対応）
+    log_file_str = str(log_file)
+    has_same_file_handler = False
+    for handler in root_logger.handlers:
+        if isinstance(handler, (RotatingFileHandler, logging.FileHandler)):
+            if hasattr(handler, 'baseFilename') and handler.baseFilename == log_file_str:
+                has_same_file_handler = True
+                break
+
+    # 同じファイルへのハンドラがなければ追加
+    if not has_same_file_handler:
+        # ファイルハンドラを追加（ルートロガー用に新しいハンドラを作成）
+        root_file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding='utf-8'
+        )
+        root_file_handler.setLevel(level)
+        root_file_handler.setFormatter(formatter)
+        root_logger.addHandler(root_file_handler)
+
+    # コンソールハンドラも必要であれば追加（重複チェック）
+    if console_output:
+        has_console_handler = any(
+            isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+            for h in root_logger.handlers
+        )
+        if not has_console_handler:
+            root_console_handler = logging.StreamHandler(sys.stdout)
+            root_console_handler.setLevel(level)
+            root_console_handler.setFormatter(formatter)
+            root_logger.addHandler(root_console_handler)
 
     return logger
 

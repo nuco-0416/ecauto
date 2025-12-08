@@ -50,7 +50,6 @@ project_root = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from inventory.core.master_db import MasterDB
-from inventory.core.cache_manager import AmazonProductCache
 from platforms.base.accounts.manager import AccountManager
 from platforms.base.core.api_client import BaseAPIClient
 from platforms.base.core.listing_validator import ListingValidator
@@ -70,46 +69,37 @@ class PriceSync:
     DEFAULT_MARKUP_RATIO = 1.3  # デフォルト掛け率: 1.3倍
     MIN_PRICE_DIFF = 100  # 価格差がこの金額以上の場合のみ更新（円）
 
-    def __init__(self, markup_ratio: float = None):
+    def __init__(self, markup_ratio: float = None, register_signal_handler: bool = False):
         """
         初期化
 
         Args:
             markup_ratio: 掛け率（デフォルト: 1.3）
+            register_signal_handler: シグナルハンドラを登録するか（スタンドアロン実行時のみTrue）
+                                      daemon経由で実行される場合はFalse（daemon_base.pyが管理）
         """
-        # シグナルハンドラを登録
-        signal.signal(signal.SIGINT, _signal_handler)
-        signal.signal(signal.SIGTERM, _signal_handler)
+        # スタンドアロン実行時のみシグナルハンドラを登録
+        # daemon経由の場合はdaemon_base.pyのシグナルハンドラが管理
+        if register_signal_handler:
+            signal.signal(signal.SIGINT, _signal_handler)
+            signal.signal(signal.SIGTERM, _signal_handler)
 
-        logger.info("[DEBUG] PriceSync.__init__ 開始")
-
-        logger.info("[DEBUG] MasterDB初期化中...")
         self.master_db = MasterDB()
-        logger.info("[DEBUG] MasterDB初期化完了")
-
-        logger.info("[DEBUG] AmazonProductCache初期化中...")
-        self.cache = AmazonProductCache()
-        logger.info("[DEBUG] AmazonProductCache初期化完了")
-
-        logger.info("[DEBUG] AccountManager初期化中...")
         self.account_manager = AccountManager()
-        logger.info("[DEBUG] AccountManager初期化完了")
 
         # SP-APIクライアント（キャッシュミス時のみ使用）
         try:
-            logger.info("[DEBUG] SP-APIクライアント初期化中...")
             # 統一された認証情報管理を使用
             if all(SP_API_CREDENTIALS.values()):
                 self.sp_api_client = AmazonSPAPIClient(SP_API_CREDENTIALS)
                 self.sp_api_available = True
-                logger.info(f"[DEBUG] SP-APIクライアント初期化完了（レート制限: {self.sp_api_client.min_interval:.1f}秒/リクエスト）")
             else:
-                logger.warning("[DEBUG] SP-API認証情報が不足しています")
+                logger.warning("SP-API認証情報が不足しています")
                 logger.warning("キャッシュが存在する商品のみ処理します")
                 self.sp_api_client = None
                 self.sp_api_available = False
         except Exception as e:
-            logger.error(f"[DEBUG] SP-APIクライアント初期化失敗: {e}", exc_info=True)
+            logger.error(f"SP-APIクライアント初期化失敗: {e}", exc_info=True)
             logger.warning("キャッシュが存在する商品のみ処理します")
             self.sp_api_client = None
             self.sp_api_available = False
@@ -117,9 +107,7 @@ class PriceSync:
         self.markup_ratio = markup_ratio if markup_ratio else self.DEFAULT_MARKUP_RATIO
 
         # 価格計算エンジンを初期化
-        logger.info("[DEBUG] PriceCalculator初期化中...")
         self.price_calculator = PriceCalculator()
-        logger.info("[DEBUG] PriceCalculator初期化完了")
 
         # 統計情報
         self.stats = {
@@ -146,7 +134,6 @@ class PriceSync:
             # 自動delisted処理の統計
             'auto_delisted_count': 0,  # 自動delisted件数
         }
-        logger.info("[DEBUG] PriceSync.__init__ 完了")
 
     def calculate_selling_price(self, amazon_price_jpy: int) -> int:
         """
@@ -173,56 +160,51 @@ class PriceSync:
         update_stats: bool = True
     ) -> Optional[Dict[str, Any]]:
         """
-        Amazon価格情報を取得（キャッシュ優先、TTL無視）
+        Amazon価格情報を取得（Master DB優先）
 
         Args:
             asin: 商品ASIN
-            use_cache: キャッシュを使用するか
-            allow_sp_api: キャッシュミス時にSP-API呼び出しを許可するか（デフォルト: True）
+            use_cache: 互換性のため残しているが、Master DBから取得
+            allow_sp_api: Master DBにない場合にSP-API呼び出しを許可するか（デフォルト: True）
             update_stats: 統計情報を更新するか（デフォルト: True）
 
         Returns:
             dict or None: 価格情報 {'price_jpy': int, 'in_stock': bool}
         """
-        import json
-        cache_file = self.cache.cache_dir / f'{asin}.json'
-        cached_product = None
+        db_product = None
 
-        # キャッシュから取得（TTL無視で直接ファイルを読む）
-        if use_cache and cache_file.exists():
+        # Master DBから取得
+        if use_cache:
             try:
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    cached_product = json.load(f)
+                db_product = self.master_db.get_product(asin)
 
-                # priceフィールドが存在するかチェック（欠損チェック）
-                if cached_product.get('price') is not None:
+                # priceフィールドが存在するかチェック
+                if db_product and db_product.get('amazon_price_jpy') is not None:
                     if update_stats:
                         self.stats['cache_hits'] += 1
                     return {
-                        'price_jpy': int(cached_product.get('price', 0)),
-                        'in_stock': cached_product.get('in_stock', False)
+                        'price_jpy': int(db_product.get('amazon_price_jpy', 0)),
+                        'in_stock': db_product.get('amazon_in_stock', False)
                     }
             except Exception as e:
-                logger.error(f"    [WARN] キャッシュ読み込みエラー: {asin} - {e}")
-                cached_product = None
+                logger.error(f"    [WARN] Master DB読み込みエラー: {asin} - {e}")
+                db_product = None
 
-        # キャッシュが存在しない、または欠損している
+        # Master DBにデータがない、または欠損している
         if update_stats:
             self.stats['cache_misses'] += 1
 
         # SP-APIが利用可能で、かつ呼び出しが許可されている場合のみ呼び出し
         if allow_sp_api and self.sp_api_available and self.sp_api_client:
             try:
-                logger.info(f"    [SP-API] キャッシュミス: {asin} - SP-APIで取得中...")
+                logger.info(f"    [SP-API] Master DBミス: {asin} - SP-APIで取得中...")
                 product_data = self.sp_api_client.get_product_price(asin)
 
                 if product_data is not None:
                     # 正常に取得できた（在庫あり、または在庫切れの正常レスポンス）
-                    # キャッシュに保存
-                    self.cache.set_product(asin, product_data)
                     self.stats['sp_api_calls'] += 1
 
-                    # マスタDBも更新
+                    # マスタDBに保存
                     price_jpy = product_data.get('price')
                     in_stock = product_data.get('in_stock', False)
 
@@ -242,14 +224,14 @@ class PriceSync:
                     self.stats['sp_api_errors'] += 1
                     logger.error(f"    [エラー] SP-API取得エラー: {asin}")
 
-                    # フォールバック: 既存のキャッシュを使用（TTL無視）
-                    if cached_product is not None:
-                        logger.info(f"    [フォールバック] 既存のキャッシュを使用: {asin}")
+                    # フォールバック: 既存のMaster DBを使用
+                    if db_product is not None:
+                        logger.info(f"    [フォールバック] 既存のMaster DBデータを使用: {asin}")
                         self.stats['cache_fallback'] += 1
 
                         # in_stock フィールドをチェック
-                        price = cached_product.get('price')
-                        in_stock = cached_product.get('in_stock')
+                        price = db_product.get('amazon_price_jpy')
+                        in_stock = db_product.get('amazon_in_stock')
 
                         if price is not None and in_stock is not None:
                             return {
@@ -257,9 +239,9 @@ class PriceSync:
                                 'in_stock': in_stock
                             }
                         else:
-                            logger.info(f"    [WARN] キャッシュの在庫情報が不完全: {asin}")
+                            logger.info(f"    [WARN] Master DBの在庫情報が不完全: {asin}")
                     else:
-                        logger.error(f"    [エラー] フォールバック失敗（キャッシュなし）: {asin}")
+                        logger.error(f"    [エラー] フォールバック失敗（Master DBデータなし）: {asin}")
 
                 time.sleep(2.1)  # SP-APIレート制限
 
@@ -267,13 +249,13 @@ class PriceSync:
                 logger.error(f"    [ERROR] SP-API呼び出し例外: {asin} - {e}")
                 self.stats['sp_api_errors'] += 1
 
-                # フォールバック: 既存のキャッシュを使用
-                if cached_product is not None:
-                    logger.info(f"    [フォールバック] 既存のキャッシュを使用: {asin}")
+                # フォールバック: 既存のMaster DBデータを使用
+                if db_product is not None:
+                    logger.info(f"    [フォールバック] 既存のMaster DBデータを使用: {asin}")
                     self.stats['cache_fallback'] += 1
 
-                    price = cached_product.get('price')
-                    in_stock = cached_product.get('in_stock')
+                    price = db_product.get('amazon_price_jpy')
+                    in_stock = db_product.get('amazon_in_stock')
 
                     if price is not None and in_stock is not None:
                         return {
@@ -339,37 +321,22 @@ class PriceSync:
         price_map = {}  # ASIN -> 価格情報のマップ
 
         if skip_cache_update:
-            # 既存キャッシュから価格情報を取得（SP-API処理をスキップ）
-            logger.info(f"\n[重要] SP-API処理をスキップ - 既存キャッシュから価格情報を取得中...")
+            # 既存Master DBから価格情報を取得（SP-API処理をスキップ）
+            logger.info(f"\n[重要] SP-API処理をスキップ - Master DBから価格情報を取得中...")
             logger.info(f"  対象商品数: {len(listings)}件")
 
-            import json
             for asin in asins:
-                cache_file = self.cache.cache_dir / f'{asin}.json'
-                if cache_file.exists():
-                    try:
-                        with open(cache_file, 'r', encoding='utf-8') as f:
-                            cached_data = json.load(f)
-                        if cached_data.get('price') is not None:
-                            price_map[asin] = {
-                                'price_jpy': int(cached_data['price']),
-                                'in_stock': cached_data.get('in_stock', False)
-                            }
-                            self.stats['cache_hits'] += 1
-                    except Exception as e:
-                        logger.debug(f"  [WARN] キャッシュ読み込みエラー: {asin} - {e}")
+                product = self.master_db.get_product(asin)
+                if product and product.get('amazon_price_jpy'):
+                    price_map[asin] = {
+                        'price_jpy': product['amazon_price_jpy'],
+                        'in_stock': product.get('amazon_in_stock', False)
+                    }
+                    self.stats['cache_hits'] += 1
+                else:
+                    logger.debug(f"  [WARN] Master DBに価格情報なし: {asin}")
 
-                # キャッシュがない場合、Master DBから試行
-                if asin not in price_map:
-                    product = self.master_db.get_product(asin)
-                    if product and product.get('amazon_price_jpy'):
-                        price_map[asin] = {
-                            'price_jpy': product['amazon_price_jpy'],
-                            'in_stock': product.get('amazon_in_stock', False)
-                        }
-                        logger.debug(f"  [DB] {asin} - Master DBから価格取得")
-
-            logger.info(f"  完了: {len(price_map)}件の価格情報を取得（キャッシュ/DB）")
+            logger.info(f"  完了: {len(price_map)}件の価格情報を取得（Master DB）")
 
         if not skip_cache_update:
             # ISSUE #005 & #006対応: キャッシュをスキップして、常に全件をSP-APIバッチで取得
@@ -422,13 +389,7 @@ class PriceSync:
                         new_price = int(price_info['price'])
                         new_stock = price_info.get('in_stock', False)
 
-                        # ①SP-API → キャッシュ（価格・在庫のみ部分更新）
-                        self.cache.set_product(asin, {
-                            'price': price_info['price'],
-                            'in_stock': new_stock
-                        }, update_types=['price', 'stock'])
-
-                        # ①SP-API → Productsテーブル
+                        # SP-API → Master DB（価格・在庫情報を更新）
                         self.master_db.update_amazon_info(
                             asin=asin,
                             price_jpy=new_price,
@@ -468,33 +429,13 @@ class PriceSync:
                         error_msg = price_info.get('error_message', 'Unknown')
                         logger.warning(f"  [API_ERROR] {asin} - {error_msg}")
 
-                        # キャッシュ/Master DBからフォールバック
-                        import json
-                        cache_file = self.cache.cache_dir / f'{asin}.json'
-                        fallback_price = None
-                        fallback_stock = None
+                        # Master DBからフォールバック
+                        product = self.master_db.get_product(asin)
+                        if product and product.get('amazon_price_jpy'):
+                            fallback_price = product['amazon_price_jpy']
+                            fallback_stock = product.get('amazon_in_stock', False)
+                            logger.info(f"    → Master DBからフォールバック: {fallback_price:,}円")
 
-                        # キャッシュから試行
-                        if cache_file.exists():
-                            try:
-                                with open(cache_file, 'r', encoding='utf-8') as f:
-                                    cached_data = json.load(f)
-                                if cached_data.get('price') is not None:
-                                    fallback_price = int(cached_data['price'])
-                                    fallback_stock = cached_data.get('in_stock', False)
-                                    logger.info(f"    → キャッシュからフォールバック: {fallback_price:,}円")
-                            except:
-                                pass
-
-                        # キャッシュがない場合、Master DBから試行
-                        if fallback_price is None:
-                            product = self.master_db.get_product(asin)
-                            if product and product.get('amazon_price_jpy'):
-                                fallback_price = product['amazon_price_jpy']
-                                fallback_stock = product.get('amazon_in_stock', False)
-                                logger.info(f"    → Master DBからフォールバック: {fallback_price:,}円")
-
-                        if fallback_price is not None:
                             # フォールバック成功
                             self.stats['price_fetch_fallback_success'] += 1
                             price_map[asin] = {
@@ -504,7 +445,7 @@ class PriceSync:
                         else:
                             # フォールバック失敗
                             self.stats['price_fetch_fallback_failed'] += 1
-                            logger.error(f"    → フォールバック失敗: キャッシュもMaster DBも利用不可")
+                            logger.error(f"    → フォールバック失敗: Master DBにデータなし")
 
                     elif status == 'out_of_stock':
                         # 在庫切れ
@@ -729,7 +670,6 @@ class PriceSync:
             max_items: テスト用：処理する最大商品数（省略時は全件）
             skip_cache_update: Trueの場合、SP-API処理をスキップして既存キャッシュを使用（テスト用）
         """
-        logger.info("[DEBUG] sync_all_accounts 開始")
         logger.info("\n" + "=" * 70)
         logger.info("価格同期処理を開始")
         logger.info("=" * 70)
@@ -740,9 +680,7 @@ class PriceSync:
         logger.info(f"開始時刻: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
         # アクティブなアカウント取得
-        logger.info("[DEBUG] アクティブなアカウント取得中...")
         accounts = self.account_manager.get_active_accounts()
-        logger.info(f"[DEBUG] アクティブなアカウント取得完了: {len(accounts) if accounts else 0}件")
         if not accounts:
             logger.error("エラー: アクティブなアカウントが見つかりません")
             return self.stats
@@ -828,9 +766,9 @@ class PriceSync:
         logger.info("=" * 70)
         logger.info(f"処理した出品数: {self.stats['total_listings']}件")
         print()
-        logger.info(f"キャッシュ:")
-        logger.info(f"  - キャッシュヒット: {self.stats['cache_hits']}件")
-        logger.info(f"  - キャッシュミス: {self.stats['cache_misses']}件")
+        logger.info(f"Master DB参照:")
+        logger.info(f"  - DBヒット: {self.stats['cache_hits']}件")
+        logger.info(f"  - DBミス: {self.stats['cache_misses']}件")
         if self.stats['cache_hits'] + self.stats['cache_misses'] > 0:
             hit_rate = self.stats['cache_hits'] / (self.stats['cache_hits'] + self.stats['cache_misses']) * 100
             logger.info(f"  - ヒット率: {hit_rate:.1f}%")
@@ -838,7 +776,7 @@ class PriceSync:
         print()
         logger.error(f"SP-API エラー処理:")
         logger.error(f"  - SP-APIエラー発生: {self.stats['sp_api_errors']}件")
-        logger.info(f"  - キャッシュフォールバック成功: {self.stats['cache_fallback']}件")
+        logger.info(f"  - Master DBフォールバック成功: {self.stats['cache_fallback']}件")
         if self.stats['sp_api_errors'] > 0:
             fallback_rate = (self.stats['cache_fallback'] / self.stats['sp_api_errors']) * 100
             logger.info(f"  - フォールバック成功率: {fallback_rate:.1f}%")
@@ -905,7 +843,7 @@ class PriceSync:
             unrecovered = self.stats['sp_api_errors'] - self.stats['cache_fallback']
             if unrecovered > 0:
                 print()
-                logger.error(f"⚠ 警告: {unrecovered}件の商品でSP-APIエラーが発生し、キャッシュも利用できませんでした。")
+                logger.error(f"⚠ 警告: {unrecovered}件の商品でSP-APIエラーが発生し、Master DBデータも利用できませんでした。")
 
         logger.info("=" * 70)
         logger.info(f"終了時刻: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -967,8 +905,8 @@ def main():
 
     args = parser.parse_args()
 
-    # 価格同期処理実行
-    sync = PriceSync(markup_ratio=args.markup_ratio)
+    # 価格同期処理実行（スタンドアロン実行時はシグナルハンドラを登録）
+    sync = PriceSync(markup_ratio=args.markup_ratio, register_signal_handler=True)
 
     if args.account:
         # 特定アカウントのみ
