@@ -1,0 +1,551 @@
+# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
+"""
+eBay価格同期スクリプト
+
+Amazon価格変動に応じてeBay出品価格を自動同期する
+"""
+
+import sys
+import logging
+from pathlib import Path
+from datetime import datetime
+import time
+from typing import Dict, Any, Optional
+
+# Windows環境対応
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
+# プロジェクトルートをパスに追加
+project_root = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(project_root))
+
+from inventory.core.master_db import MasterDB
+from inventory.core.cache_manager import AmazonProductCache
+from platforms.ebay.accounts.manager import EbayAccountManager
+from platforms.ebay.core.api_client import EbayAPIClient
+from integrations.amazon.sp_api_client import AmazonSPAPIClient
+from integrations.amazon.config import SP_API_CREDENTIALS
+from common.pricing.calculator import PriceCalculator
+
+# ロガー設定
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+class EbayPriceSync:
+    """
+    eBay価格同期クラス
+    """
+
+    # 価格計算設定
+    DEFAULT_MARKUP_RATIO = 1.3  # デフォルト掛け率: 1.3倍
+    MIN_PRICE_DIFF_USD = 1.0    # 価格差がこの金額（USD）以上の場合のみ更新
+
+    def __init__(self, markup_ratio: float = None, auto_fetch_sp_api: bool = True):
+        """
+        初期化
+
+        Args:
+            markup_ratio: マークアップ率（デフォルト: 1.3、Noneの場合は設定ファイルから取得）
+            auto_fetch_sp_api: キャッシュがない場合にSP-APIから自動取得するか（デフォルト: True）
+        """
+        logger.info("eBay価格同期処理を初期化中...")
+
+        self.master_db = MasterDB()
+        self.cache = AmazonProductCache()
+        self.account_manager = EbayAccountManager()
+        self.auto_fetch_sp_api = auto_fetch_sp_api
+
+        # 価格計算エンジンの初期化
+        try:
+            self.price_calculator = PriceCalculator()
+            logger.info("価格計算エンジン初期化完了")
+        except Exception as e:
+            logger.error(f"価格計算エンジン初期化失敗: {e}")
+            raise
+
+        # SP-APIクライアント（価格取得用）
+        try:
+            if all(SP_API_CREDENTIALS.values()):
+                self.sp_api_client = AmazonSPAPIClient(SP_API_CREDENTIALS)
+                self.sp_api_available = True
+                logger.info("SP-APIクライアント初期化完了")
+            else:
+                logger.warning("SP-API認証情報が不足しています")
+                self.sp_api_client = None
+                self.sp_api_available = False
+        except Exception as e:
+            logger.error(f"SP-APIクライアント初期化失敗: {e}")
+            self.sp_api_client = None
+            self.sp_api_available = False
+
+        self.markup_ratio = markup_ratio  # Noneの場合は設定ファイルから取得
+
+        # 統計情報
+        self.stats = {
+            'total_listings': 0,
+            'price_updated': 0,
+            'no_update_needed': 0,
+            'out_of_stock_updated': 0,  # 在庫切れで数量を0にした件数
+            'sp_api_fetched': 0,  # SP-APIから取得した件数
+            'skipped_no_offer_id': 0,  # offer_idが見つからずスキップ
+            'skipped_no_amazon_info': 0,  # Amazon価格情報が取得できずスキップ
+            'errors': 0,
+            'errors_detail': [],
+        }
+
+    def calculate_selling_price_usd(self, amazon_price_jpy: int) -> float:
+        """
+        販売価格を計算（USD）
+
+        新しい価格計算モジュール（PriceCalculator）を使用して、
+        通貨換算込みの価格を計算します。
+
+        Args:
+            amazon_price_jpy: Amazon価格（円）
+
+        Returns:
+            float: 販売価格（USD）
+        """
+        # 新しい価格計算モジュールを使用
+        # platform='ebay' を指定することで、自動的にUSDに換算される
+        price_usd = self.price_calculator.calculate_selling_price(
+            amazon_price=amazon_price_jpy,
+            platform='ebay',
+            override_markup_ratio=self.markup_ratio  # CLIオプションでのオーバーライドに対応
+        )
+        return price_usd
+
+    def get_amazon_price_from_cache(self, asin: str) -> Optional[Dict[str, Any]]:
+        """
+        キャッシュからAmazon価格情報を取得
+
+        Args:
+            asin: 商品ASIN
+
+        Returns:
+            dict or None: {'price_jpy': int, 'in_stock': bool}
+        """
+        import json
+        cache_file = self.cache.cache_dir / f'{asin}.json'
+
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    cached_product = json.load(f)
+
+                if cached_product.get('price') is not None:
+                    return {
+                        'price_jpy': int(cached_product.get('price', 0)),
+                        'in_stock': cached_product.get('in_stock', False)
+                    }
+            except Exception as e:
+                logger.error(f"キャッシュ読み込みエラー: {asin} - {e}")
+
+        return None
+
+    def fill_cache_for_asin(self, asin: str) -> Optional[Dict[str, Any]]:
+        """
+        SP-APIから商品情報を取得してキャッシュと Master DBを更新
+
+        Args:
+            asin: 商品ASIN
+
+        Returns:
+            dict or None: {'price_jpy': int, 'in_stock': bool}
+        """
+        if not self.sp_api_available:
+            logger.warning(f"  [WARN] {asin} - SP-APIクライアントが利用できません")
+            return None
+
+        try:
+            logger.info(f"  [SP-API] {asin} - Amazon価格を取得中...")
+
+            # SP-APIで商品情報を取得
+            product_data = self.sp_api_client.get_product_price(asin)
+
+            if not product_data:
+                logger.warning(f"  [SP-API] {asin} - データが取得できませんでした")
+                return None
+
+            # タイムスタンプを追加
+            now = datetime.now().isoformat()
+            product_data['price_updated_at'] = now
+            product_data['stock_updated_at'] = now
+
+            # キャッシュに保存
+            self.cache.set_product(asin, product_data)
+
+            # Master DBも更新
+            price_jpy = int(product_data.get('price', 0))
+            self.master_db.update_amazon_info(
+                asin=asin,
+                price_jpy=price_jpy,
+                in_stock=product_data.get('in_stock', False)
+            )
+
+            logger.info(f"  [SP-API] {asin} - 取得成功: {price_jpy:,}円")
+            self.stats['sp_api_fetched'] += 1
+
+            # レート制限（2.1秒待機）
+            time.sleep(2.1)
+
+            return {
+                'price_jpy': price_jpy,
+                'in_stock': product_data.get('in_stock', False)
+            }
+
+        except Exception as e:
+            logger.error(f"  [SP-API] {asin} - 取得エラー: {e}")
+            self.stats['errors'] += 1
+            self.stats['errors_detail'].append({
+                'asin': asin,
+                'error': f'SP-API取得エラー: {str(e)}'
+            })
+            return None
+
+    def sync_account_prices(self, account_id: str, dry_run: bool = False, max_items: int = None):
+        """
+        1アカウントの価格を同期
+
+        Args:
+            account_id: eBayアカウントID
+            dry_run: Trueの場合、実際の更新は行わない
+            max_items: テスト用：処理する最大商品数（省略時は全件）
+        """
+        account = self.account_manager.get_account(account_id)
+        if not account:
+            logger.error(f"アカウント {account_id} が見つかりません")
+            return
+
+        logger.info("")
+        logger.info("┌" + "─" * 68 + "┐")
+        logger.info(f"│ 【eBay価格同期】アカウント: {account.get('name', account_id)} ({account_id})" + " " * (68 - len(f" 【eBay価格同期】アカウント: {account.get('name', account_id)} ({account_id})") - 2) + "│")
+        logger.info("└" + "─" * 68 + "┘")
+
+        # 出品一覧を取得（出品済みのみ）
+        listings = self.master_db.get_listings_by_account(
+            platform='ebay',
+            account_id=account_id,
+            status='listed'
+        )
+
+        # テスト用：商品数を制限
+        if max_items and len(listings) > max_items:
+            logger.info(f"出品数: {len(listings)}件 → {max_items}件に制限（テストモード）")
+            listings = listings[:max_items]
+        else:
+            logger.info(f"出品数: {len(listings)}件")
+
+        if not listings:
+            logger.info("  → 出品なし、スキップ")
+            return
+
+        # eBay APIクライアント作成
+        credentials = self.account_manager.get_credentials(account_id)
+        if not credentials:
+            logger.error(f"eBayアカウント認証情報が見つかりません: {account_id}")
+            self.stats['errors'] += 1
+            return
+
+        environment = self.account_manager.get_environment(account_id)
+
+        try:
+            ebay_client = EbayAPIClient(
+                account_id=account_id,
+                credentials=credentials,
+                environment=environment
+            )
+        except Exception as e:
+            logger.error(f"eBay APIクライアントの初期化に失敗: {e}")
+            self.stats['errors'] += 1
+            return
+
+        # 各出品の価格を更新
+        logger.info("\n価格を更新中...")
+        for listing in listings:
+            self._sync_listing_price(listing, ebay_client, dry_run)
+
+    def _sync_listing_price(self, listing: dict, ebay_client: EbayAPIClient, dry_run: bool):
+        """
+        1つの出品の価格を同期
+
+        Args:
+            listing: 出品情報
+            ebay_client: eBay APIクライアント
+            dry_run: Trueの場合、実際の更新は行わない
+        """
+        asin = listing['asin']
+        sku = listing['sku']
+        current_price_usd = listing['selling_price']  # 現在の販売価格（USD）
+
+        self.stats['total_listings'] += 1
+
+        # eBayメタデータを取得（offer_id取得用）
+        ebay_metadata = self.master_db.get_ebay_metadata(sku)
+        if not ebay_metadata or not ebay_metadata.get('offer_id'):
+            logger.info(f"  [SKIP] {asin} - eBayメタデータ（offer_id）が見つかりません")
+            self.stats['skipped_no_offer_id'] += 1
+            return
+
+        offer_id = ebay_metadata['offer_id']
+
+        # キャッシュからAmazon価格を取得
+        amazon_info = self.get_amazon_price_from_cache(asin)
+
+        # キャッシュがない場合、SP-APIから自動取得
+        if not amazon_info or not amazon_info.get('price_jpy'):
+            if self.auto_fetch_sp_api:
+                logger.info(f"  [INFO] {asin} - キャッシュに価格情報がありません、SP-APIから取得します")
+                amazon_info = self.fill_cache_for_asin(asin)
+
+                if not amazon_info or not amazon_info.get('price_jpy'):
+                    logger.info(f"  [SKIP] {asin} - SP-APIからも価格情報を取得できませんでした")
+                    self.stats['skipped_no_amazon_info'] += 1
+                    return
+            else:
+                logger.info(f"  [SKIP] {asin} - キャッシュに価格情報がありません（SP-API自動取得: 無効）")
+                self.stats['skipped_no_amazon_info'] += 1
+                return
+
+        amazon_price_jpy = amazon_info['price_jpy']
+        in_stock = amazon_info.get('in_stock', True)
+
+        # 在庫切れチェック
+        if not in_stock:
+            logger.info(f"  [OUT_OF_STOCK] {asin} - Amazon在庫切れ、数量を0に更新")
+
+            if dry_run:
+                logger.info(f"    → DRY RUN: 実際の更新はスキップ")
+                self.stats['out_of_stock_updated'] += 1
+                return
+
+            # 在庫数を0に更新
+            try:
+                success = ebay_client.update_inventory_quantity(sku, 0)
+
+                if success:
+                    logger.info(f"    → 在庫数0に更新成功")
+                    self.stats['out_of_stock_updated'] += 1
+                else:
+                    logger.error(f"    → 在庫数更新失敗")
+                    self.stats['errors'] += 1
+            except Exception as e:
+                logger.error(f"    → 在庫数更新エラー: {e}")
+                self.stats['errors'] += 1
+                self.stats['errors_detail'].append({
+                    'asin': asin,
+                    'sku': sku,
+                    'error': f'在庫数更新エラー: {str(e)}'
+                })
+
+            return
+
+        # 販売価格を計算（USD）
+        new_price_usd = self.calculate_selling_price_usd(amazon_price_jpy)
+
+        # 価格差をチェック
+        price_diff_usd = abs(new_price_usd - current_price_usd)
+
+        if price_diff_usd < self.MIN_PRICE_DIFF_USD:
+            # 変更不要
+            self.stats['no_update_needed'] += 1
+            return
+
+        # 変更が必要
+        logger.info(f"  [UPDATE] {asin} | ${current_price_usd:.2f} -> ${new_price_usd:.2f} (差額: ${price_diff_usd:.2f})")
+        logger.info(f"    Amazon価格: {amazon_price_jpy:,}円")
+
+        if dry_run:
+            logger.info(f"    → DRY RUN: 実際の更新はスキップ")
+            self.stats['price_updated'] += 1
+            return
+
+        # eBay APIで価格更新
+        try:
+            success = ebay_client.update_offer_price(offer_id, new_price_usd)
+
+            if success:
+                # マスタDBも更新
+                self.master_db.update_listing(
+                    listing_id=listing['id'],
+                    selling_price=new_price_usd
+                )
+
+                logger.info(f"    → 更新成功")
+                self.stats['price_updated'] += 1
+            else:
+                logger.error(f"    → 更新失敗")
+                self.stats['errors'] += 1
+                self.stats['errors_detail'].append({
+                    'asin': asin,
+                    'sku': sku,
+                    'error': 'eBay API update_offer_price() failed'
+                })
+
+        except Exception as e:
+            logger.error(f"    → 更新エラー: {e}")
+            self.stats['errors'] += 1
+            self.stats['errors_detail'].append({
+                'asin': asin,
+                'sku': sku,
+                'error': str(e)
+            })
+
+    def sync_all_accounts(self, dry_run: bool = False, max_items: int = None):
+        """
+        全アカウントの価格を同期
+
+        Args:
+            dry_run: Trueの場合、実際の更新は行わない
+            max_items: テスト用：処理する最大商品数（省略時は全件）
+        """
+        logger.info("\n" + "=" * 70)
+        logger.info("eBay価格同期処理を開始")
+        logger.info("=" * 70)
+        logger.info(f"マークアップ率: {self.markup_ratio or '設定ファイルから取得'}")
+        logger.info(f"JPY→USD換算: PriceCalculator（リアルタイム為替レート取得）")
+        logger.info(f"最小価格差: ${self.MIN_PRICE_DIFF_USD:.2f}")
+        logger.info(f"SP-API自動取得: {'有効' if self.auto_fetch_sp_api else '無効'}")
+        logger.info(f"実行モード: {'DRY RUN（実際の更新なし）' if dry_run else '本番実行'}")
+        logger.info(f"開始時刻: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        # アクティブなアカウント取得
+        accounts = self.account_manager.get_active_accounts()
+        if not accounts:
+            logger.error("エラー: アクティブなアカウントが見つかりません")
+            return self.stats
+
+        logger.info(f"アクティブアカウント数: {len(accounts)}件\n")
+
+        # 各アカウントを処理
+        for account in accounts:
+            account_id = account['id']
+
+            try:
+                self.sync_account_prices(account_id, dry_run, max_items)
+            except Exception as e:
+                logger.error(f"エラー: アカウント {account_id} の処理中にエラー: {e}")
+                self.stats['errors'] += 1
+                self.stats['errors_detail'].append({
+                    'account_id': account_id,
+                    'error': str(e)
+                })
+
+        # 統計表示
+        self._print_summary()
+
+        return self.stats
+
+    def _print_summary(self):
+        """統計情報を表示"""
+        logger.info("\n" + "=" * 70)
+        logger.info("処理結果サマリー")
+        logger.info("=" * 70)
+        logger.info(f"処理した出品数: {self.stats['total_listings']}件")
+        logger.info(f"価格更新:")
+        logger.info(f"  - 更新した商品: {self.stats['price_updated']}件")
+        logger.info(f"  - 更新不要: {self.stats['no_update_needed']}件")
+        logger.info(f"在庫切れ処理:")
+        logger.info(f"  - 在庫0に更新: {self.stats['out_of_stock_updated']}件")
+        logger.info(f"スキップ:")
+        logger.info(f"  - offer_id未登録: {self.stats['skipped_no_offer_id']}件")
+        logger.info(f"  - Amazon価格情報なし: {self.stats['skipped_no_amazon_info']}件")
+        logger.info(f"SP-API取得:")
+        logger.info(f"  - キャッシュ欠損によりSP-APIから取得: {self.stats['sp_api_fetched']}件")
+        logger.info(f"エラー: {self.stats['errors']}件")
+
+        # 内訳の合計チェック
+        total_accounted = (
+            self.stats['price_updated'] +
+            self.stats['no_update_needed'] +
+            self.stats['out_of_stock_updated'] +
+            self.stats['skipped_no_offer_id'] +
+            self.stats['skipped_no_amazon_info']
+        )
+        if total_accounted != self.stats['total_listings']:
+            logger.warning(f"⚠️ 統計の不一致: 処理数={self.stats['total_listings']}, 集計={total_accounted}")
+
+        if self.stats['errors_detail']:
+            logger.error("\nエラー詳細:")
+            for error in self.stats['errors_detail'][:10]:  # 最大10件表示
+                logger.error(f"  - {error}")
+
+        logger.info("=" * 70)
+        logger.info(f"終了時刻: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info("")
+
+
+def main():
+    """メイン処理"""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='eBay出品の価格を自動同期'
+    )
+    parser.add_argument(
+        '--markup-ratio',
+        type=float,
+        default=None,
+        help='マークアップ率のオーバーライド（省略時は設定ファイルから取得）'
+    )
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='DRY RUNモード（実際の更新は行わない）'
+    )
+    parser.add_argument(
+        '--account',
+        help='特定のアカウントIDのみ処理（省略時は全アカウント）'
+    )
+    parser.add_argument(
+        '--max-items',
+        type=int,
+        default=None,
+        help='テスト用：処理する最大商品数（省略時は全件）'
+    )
+    parser.add_argument(
+        '--no-auto-fetch-sp-api',
+        action='store_true',
+        help='キャッシュがない場合にSP-APIから自動取得しない（デフォルト: 自動取得する）'
+    )
+
+    args = parser.parse_args()
+
+    # 価格同期処理実行
+    sync = EbayPriceSync(
+        markup_ratio=args.markup_ratio,
+        auto_fetch_sp_api=not args.no_auto_fetch_sp_api
+    )
+
+    if args.account:
+        # 特定アカウントのみ
+        sync.sync_account_prices(
+            account_id=args.account,
+            dry_run=args.dry_run,
+            max_items=args.max_items
+        )
+        sync._print_summary()
+    else:
+        # 全アカウント
+        stats = sync.sync_all_accounts(
+            dry_run=args.dry_run,
+            max_items=args.max_items
+        )
+
+    # 終了コード
+    if sync.stats['errors'] > 0:
+        sys.exit(1)
+    else:
+        sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()

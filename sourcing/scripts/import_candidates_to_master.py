@@ -28,9 +28,11 @@ from inventory.core.master_db import MasterDB
 from inventory.core.product_manager import ProductManager
 from inventory.core.listing_manager import ListingManager
 from inventory.core.prohibited_item_checker import ProhibitedItemChecker
+from inventory.core.blocklist_manager import BlocklistManager
 from common.pricing import PriceCalculator
 from scheduler.queue_manager import UploadQueueManager
 from shared.utils.sku_generator import generate_sku
+from shared.utils.logger import setup_logger
 
 
 class CandidateImporter:
@@ -55,6 +57,9 @@ class CandidateImporter:
         self.add_to_listings = add_to_listings
         self.add_to_queue = add_to_queue
 
+        # ロガーを設定（ファイルとコンソール両方に出力）
+        self.logger = setup_logger('import_candidates_to_master', console_output=True)
+
         # データベースパス
         self.sourcing_db_path = project_root / 'sourcing' / 'data' / 'sourcing.db'
 
@@ -78,6 +83,9 @@ class CandidateImporter:
             self.prohibited_checker = ProhibitedItemChecker()
         else:
             self.prohibited_checker = None
+
+        # ブロックリストマネージャー初期化
+        self.blocklist_manager = BlocklistManager()
 
         # SP-API認証情報を環境変数から取得
         load_dotenv(project_root / '.env')
@@ -124,28 +132,28 @@ class CandidateImporter:
         ]
 
         if not active_accounts:
-            print("[WARNING] アクティブなアカウントが見つかりません")
+            self.logger.warning("アクティブなアカウントが見つかりません")
             return []
 
         return active_accounts
 
     def run(self):
         """メイン処理"""
-        print("\n" + "=" * 70)
-        print("出品連携スクリプト - sourcing_candidates → master.db")
-        print("=" * 70)
-        print(f"実行モード: {'DRY RUN（確認のみ）' if self.dry_run else '本番実行'}")
+        self.logger.info("=" * 70)
+        self.logger.info("出品連携スクリプト - sourcing_candidates → master.db")
+        self.logger.info("=" * 70)
+        self.logger.info(f"実行モード: {'DRY RUN（確認のみ）' if self.dry_run else '本番実行'}")
 
         # account_limitsが指定されている場合、limitを自動計算
         if self.account_limits:
             calculated_limit = sum(self.account_limits.values())
             if self.limit is None or self.limit > calculated_limit:
                 self.limit = calculated_limit
-            print(f"処理件数制限: {self.limit}件（アカウント別指定: {self.account_limits}）")
+            self.logger.info(f"処理件数制限: {self.limit}件（アカウント別指定: {self.account_limits}）")
         else:
-            print(f"処理件数制限: {self.limit if self.limit else '全件'}")
+            self.logger.info(f"処理件数制限: {self.limit if self.limit else '全件'}")
 
-        print(f"対象アカウント: {', '.join(self.accounts)}")
+        self.logger.info(f"対象アカウント: {', '.join(self.accounts)}")
 
         # 登録対象テーブルの表示
         tables_to_register = []
@@ -155,72 +163,67 @@ class CandidateImporter:
                 tables_to_register.append('upload_queue')
         else:
             tables_to_register.append('products')
-        print(f"登録対象テーブル: {' + '.join(tables_to_register)}")
+        self.logger.info(f"登録対象テーブル: {' + '.join(tables_to_register)}")
 
-        print("=" * 70)
-        print()
+        self.logger.info("=" * 70)
 
         # 1. sourcing_candidatesから未処理ASIN取得
         asins = self._get_candidate_asins()
         if not asins:
-            print("[INFO] 処理対象のASINがありません")
+            self.logger.info("処理対象のASINがありません")
             return
 
         self.stats['total_asins'] = len(asins)
-        print(f"\n[1/6] 候補ASIN取得完了: {len(asins)}件\n")
+        self.logger.info(f"[1/6] 候補ASIN取得完了: {len(asins)}件")
 
         if self.dry_run:
-            print(f"[DRY RUN] 最初の10件を表示:")
+            self.logger.info("[DRY RUN] 最初の10件を表示:")
             for i, asin in enumerate(asins[:10], 1):
-                print(f"  {i}. {asin}")
+                self.logger.info(f"  {i}. {asin}")
             if len(asins) > 10:
-                print(f"  ... 他 {len(asins) - 10}件")
-            print()
+                self.logger.info(f"  ... 他 {len(asins) - 10}件")
 
         # 2. SP-APIで商品情報取得
-        print(f"[2/6] SP-APIで商品情報を取得中...")
-        print(f"      注意: SP-APIレート制限により、処理に時間がかかります")
-        print(f"      推定時間: 約{len(asins) * 12 / 60:.1f}分")
-        print()
+        self.logger.info("[2/6] SP-APIで商品情報を取得中...")
+        self.logger.info("      注意: SP-APIレート制限により、処理に時間がかかります")
+        self.logger.info(f"      推定時間: 約{len(asins) * 12 / 60:.1f}分")
 
         if not self.dry_run:
             products_data = self._fetch_products_data(asins)
-            print(f"\n[INFO] 商品情報取得完了: 成功 {self.stats['fetched_count']}件 / 失敗 {self.stats['failed_fetch_count']}件\n")
+            self.logger.info(f"商品情報取得完了: 成功 {self.stats['fetched_count']}件 / 失敗 {self.stats['failed_fetch_count']}件")
         else:
-            print(f"[DRY RUN] SP-API呼び出しをスキップ\n")
+            self.logger.info("[DRY RUN] SP-API呼び出しをスキップ")
             products_data = {}
 
         # 3. アカウント割り振り（1000件ずつランダム）
-        print(f"[3/6] アカウント割り振り中...")
+        self.logger.info("[3/6] アカウント割り振り中...")
         account_assignments = self._assign_accounts(asins)
         for account_id, assigned_asins in account_assignments.items():
-            print(f"      {account_id}: {len(assigned_asins)}件")
-        print()
+            self.logger.info(f"      {account_id}: {len(assigned_asins)}件")
 
         # 4. テーブル登録
         tables_desc = ' + '.join(tables_to_register)
-        print(f"[4/6] {tables_desc}への登録中...")
+        self.logger.info(f"[4/6] {tables_desc}への登録中...")
         if not self.dry_run and products_data:
             self._register_products_and_listings(products_data, account_assignments)
-            print(f"      登録完了:")
-            print(f"        - products:     {self.stats['added_to_products']}件")
+            self.logger.info("      登録完了:")
+            self.logger.info(f"        - products:     {self.stats['added_to_products']}件")
             if self.add_to_listings:
-                print(f"        - listings:     {self.stats['added_to_listings']}件")
+                self.logger.info(f"        - listings:     {self.stats['added_to_listings']}件")
             if self.add_to_queue:
-                print(f"        - upload_queue: {self.stats['added_to_queue']}件")
+                self.logger.info(f"        - upload_queue: {self.stats['added_to_queue']}件")
                 if self.stats['failed_queue_count'] > 0:
-                    print(f"        - 失敗:         {self.stats['failed_queue_count']}件")
-            print()
+                    self.logger.info(f"        - 失敗:         {self.stats['failed_queue_count']}件")
         else:
-            print(f"[DRY RUN] 登録をスキップ\n")
+            self.logger.info("[DRY RUN] 登録をスキップ")
 
         # 6. sourcing_candidatesのstatus更新
-        print(f"[6/6] sourcing_candidatesのstatus更新中...")
+        self.logger.info("[6/6] sourcing_candidatesのstatus更新中...")
         if not self.dry_run:
             self._update_candidate_status(asins, 'imported')
-            print(f"      更新完了: {self.stats['updated_status_count']}件\n")
+            self.logger.info(f"      更新完了: {self.stats['updated_status_count']}件")
         else:
-            print(f"[DRY RUN] status更新をスキップ\n")
+            self.logger.info("[DRY RUN] status更新をスキップ")
 
         # サマリー表示
         self._print_summary()
@@ -264,7 +267,7 @@ class CandidateImporter:
         missing_asins = []
 
         # 1. まず、productsテーブルから既存情報を確認
-        print(f"  productsテーブルから既存情報を確認中...", end='', flush=True)
+        self.logger.info("  productsテーブルから既存情報を確認中...")
         for asin in asins:
             product = self.master_db.get_product(asin)
             if product:
@@ -285,19 +288,18 @@ class CandidateImporter:
             else:
                 missing_asins.append(asin)
 
-        print(f" 完了")
-        print(f"    → 既存: {len(existing_asins)}件（DB取得）")
+        self.logger.info("  既存情報確認完了")
+        self.logger.info(f"    → 既存: {len(existing_asins)}件（DB取得）")
 
         # 2. productsに存在しないASINのみSP-APIで取得
         if missing_asins:
-            print(f"    → 新規: {len(missing_asins)}件（SP-API取得）")
-            print(f"        推定時間: 約{len(missing_asins) * 2.5 / 60:.1f}分")
-            print()
+            self.logger.info(f"    → 新規: {len(missing_asins)}件（SP-API取得）")
+            self.logger.info(f"        推定時間: 約{len(missing_asins) * 2.5 / 60:.1f}分")
 
             # 個別に処理
             for i, asin in enumerate(missing_asins, 1):
                 try:
-                    print(f"  [{i}/{len(missing_asins)}] {asin} を取得中...", end='', flush=True)
+                    self.logger.info(f"  [{i}/{len(missing_asins)}] {asin} を取得中...")
 
                     # 商品情報取得
                     batch_data = self.sp_api_client.get_products_batch([asin])
@@ -305,16 +307,16 @@ class CandidateImporter:
                     if asin in batch_data:
                         products_data[asin] = batch_data[asin]
                         self.stats['fetched_count'] += 1
-                        print(" OK")
+                        self.logger.info(f"  [{i}/{len(missing_asins)}] {asin} 取得成功")
                     else:
                         self.stats['failed_fetch_count'] += 1
-                        print(" FAILED (データなし)")
+                        self.logger.warning(f"  [{i}/{len(missing_asins)}] {asin} 取得失敗 (データなし)")
 
                 except Exception as e:
                     self.stats['failed_fetch_count'] += 1
-                    print(f" ERROR: {e}")
+                    self.logger.error(f"  [{i}/{len(missing_asins)}] {asin} エラー: {e}")
         else:
-            print(f"    → 新規: 0件（SP-API呼び出しなし）")
+            self.logger.info("    → 新規: 0件（SP-API呼び出しなし）")
 
         return products_data
 
@@ -339,6 +341,15 @@ class CandidateImporter:
 
                 product_data = products_data[asin]
 
+                # ブロックリストチェック
+                if self.blocklist_manager.is_blocked(asin):
+                    block_info = self.blocklist_manager.get_block_info(asin)
+                    self.logger.warning(f"  [BLOCKLIST] {asin}: ブロックリスト登録済み")
+                    self.logger.warning(f"              理由: {block_info.get('reason', '不明')}")
+                    self.logger.warning(f"              削除日: {block_info.get('deleted_at', '不明')}")
+                    self.stats['blocklist_blocked_count'] = self.stats.get('blocklist_blocked_count', 0) + 1
+                    continue
+
                 # 禁止商品チェック
                 if self.prohibited_checker:
                     check_result = self.prohibited_checker.check_product({
@@ -353,11 +364,11 @@ class CandidateImporter:
                     })
 
                     if check_result['recommendation'] == 'auto_block':
-                        print(f"  [BLOCKED] {asin}: {check_result['risk_level']} (スコア: {check_result['risk_score']})")
+                        self.logger.warning(f"  [BLOCKED] {asin}: {check_result['risk_level']} (スコア: {check_result['risk_score']})")
                         if check_result['matched_keywords']:
-                            print(f"            キーワード: {[k['keyword'] for k in check_result['matched_keywords']]}")
+                            self.logger.warning(f"            キーワード: {[k['keyword'] for k in check_result['matched_keywords']]}")
                         if check_result['matched_categories']:
-                            print(f"            カテゴリ: {check_result['matched_categories']}")
+                            self.logger.warning(f"            カテゴリ: {check_result['matched_categories']}")
                         self.stats['blocked_count'] = self.stats.get('blocked_count', 0) + 1
                         continue
 
@@ -379,7 +390,7 @@ class CandidateImporter:
                     if product_added:
                         self.stats['added_to_products'] += 1
                 except Exception as e:
-                    print(f"  [ERROR] products登録失敗 ({asin}): {e}")
+                    self.logger.error(f"  [ERROR] products登録失敗 ({asin}): {e}")
                     continue
 
                 # Step 2: listingsテーブルに登録（オプショナル）
@@ -417,12 +428,12 @@ class CandidateImporter:
                     except Exception as e:
                         # UNIQUE制約違反の場合はスキップ
                         if 'UNIQUE constraint failed' in str(e) or 'already exists' in str(e).lower():
-                            print(f"  [INFO] listings既存スキップ ({asin})")
+                            self.logger.info(f"  listings既存スキップ ({asin})")
                         else:
-                            print(f"  [ERROR] listings登録失敗 ({asin}): {e}")
+                            self.logger.error(f"  [ERROR] listings登録失敗 ({asin}): {e}")
                             continue
                 else:
-                    print(f"  [INFO] listings登録スキップ ({asin}) - --products-only指定")
+                    self.logger.info(f"  listings登録スキップ ({asin}) - --products-only指定")
 
                 # Step 3: upload_queueに追加（オプショナル）
                 if self.add_to_queue:
@@ -437,12 +448,12 @@ class CandidateImporter:
                             self.stats['added_to_queue'] += 1
                         else:
                             self.stats['failed_queue_count'] += 1
-                            print(f"  [WARNING] キュー追加失敗 ({asin})")
+                            self.logger.warning(f"  キュー追加失敗 ({asin})")
                     except Exception as e:
                         self.stats['failed_queue_count'] += 1
-                        print(f"  [ERROR] キュー追加失敗 ({asin}): {e}")
+                        self.logger.error(f"  [ERROR] キュー追加失敗 ({asin}): {e}")
                 else:
-                    print(f"  [INFO] キュー追加スキップ ({asin}) - --no-queue指定")
+                    self.logger.info(f"  キュー追加スキップ ({asin}) - --no-queue指定")
 
     def _assign_accounts(self, asins: List[str]) -> Dict[str, List[str]]:
         """
@@ -510,28 +521,29 @@ class CandidateImporter:
 
     def _print_summary(self):
         """サマリーを表示"""
-        print("=" * 70)
-        print("実行結果サマリー")
-        print("=" * 70)
-        print(f"処理対象ASIN数:       {self.stats['total_asins']:>6}件")
-        print(f"商品情報取得成功:     {self.stats['fetched_count']:>6}件")
-        print(f"商品情報取得失敗:     {self.stats['failed_fetch_count']:>6}件")
+        self.logger.info("=" * 70)
+        self.logger.info("実行結果サマリー")
+        self.logger.info("=" * 70)
+        self.logger.info(f"処理対象ASIN数:       {self.stats['total_asins']:>6}件")
+        self.logger.info(f"商品情報取得成功:     {self.stats['fetched_count']:>6}件")
+        self.logger.info(f"商品情報取得失敗:     {self.stats['failed_fetch_count']:>6}件")
+        if 'blocklist_blocked_count' in self.stats:
+            self.logger.info(f"ブロックリスト拒否:   {self.stats['blocklist_blocked_count']:>6}件")
         if self.check_prohibited and 'blocked_count' in self.stats:
-            print(f"禁止商品ブロック:     {self.stats['blocked_count']:>6}件")
-        print(f"productsテーブル追加: {self.stats['added_to_products']:>6}件")
-        print(f"listingsテーブル追加: {self.stats['added_to_listings']:>6}件")
-        print(f"upload_queue追加:     {self.stats['added_to_queue']:>6}件")
-        print(f"upload_queue失敗:     {self.stats['failed_queue_count']:>6}件")
-        print(f"status更新:           {self.stats['updated_status_count']:>6}件")
-        print("=" * 70)
+            self.logger.info(f"禁止商品ブロック:     {self.stats['blocked_count']:>6}件")
+        self.logger.info(f"productsテーブル追加: {self.stats['added_to_products']:>6}件")
+        self.logger.info(f"listingsテーブル追加: {self.stats['added_to_listings']:>6}件")
+        self.logger.info(f"upload_queue追加:     {self.stats['added_to_queue']:>6}件")
+        self.logger.info(f"upload_queue失敗:     {self.stats['failed_queue_count']:>6}件")
+        self.logger.info(f"status更新:           {self.stats['updated_status_count']:>6}件")
+        self.logger.info("=" * 70)
 
         if self.dry_run:
-            print("\n[DRY RUN完了] 実際の登録は行われていません")
+            self.logger.info("[DRY RUN完了] 実際の登録は行われていません")
         else:
-            print("\n[実行完了] 出品連携が正常に完了しました")
+            self.logger.info("[実行完了] 出品連携が正常に完了しました")
 
-        print("=" * 70)
-        print()
+        self.logger.info("=" * 70)
 
 
 def main():

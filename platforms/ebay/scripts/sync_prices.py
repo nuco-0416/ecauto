@@ -24,7 +24,6 @@ project_root = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(project_root))
 
 from inventory.core.master_db import MasterDB
-from inventory.core.cache_manager import AmazonProductCache
 from platforms.ebay.accounts.manager import EbayAccountManager
 from platforms.ebay.core.api_client import EbayAPIClient
 from integrations.amazon.sp_api_client import AmazonSPAPIClient
@@ -59,7 +58,6 @@ class EbayPriceSync:
         logger.info("eBay価格同期処理を初期化中...")
 
         self.master_db = MasterDB()
-        self.cache = AmazonProductCache()
         self.account_manager = EbayAccountManager()
         self.auto_fetch_sp_api = auto_fetch_sp_api
 
@@ -94,6 +92,8 @@ class EbayPriceSync:
             'price_updated': 0,
             'no_update_needed': 0,
             'out_of_stock_updated': 0,  # 在庫切れで数量を0にした件数
+            'stock_restored': 0,  # 販売済み商品の在庫を1に復活させた件数
+            'relisted': 0,  # UNPUBLISHED状態のOfferを再公開した件数
             'sp_api_fetched': 0,  # SP-APIから取得した件数
             'skipped_no_offer_id': 0,  # offer_idが見つからずスキップ
             'skipped_no_amazon_info': 0,  # Amazon価格情報が取得できずスキップ
@@ -125,7 +125,10 @@ class EbayPriceSync:
 
     def get_amazon_price_from_cache(self, asin: str) -> Optional[Dict[str, Any]]:
         """
-        キャッシュからAmazon価格情報を取得
+        Master DBからAmazon価格情報を取得
+
+        注: 関数名は後方互換性のため残していますが、
+        実際にはMaster DBから取得しています。
 
         Args:
             asin: 商品ASIN
@@ -133,27 +136,25 @@ class EbayPriceSync:
         Returns:
             dict or None: {'price_jpy': int, 'in_stock': bool}
         """
-        import json
-        cache_file = self.cache.cache_dir / f'{asin}.json'
+        try:
+            product = self.master_db.get_product(asin)
 
-        if cache_file.exists():
-            try:
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    cached_product = json.load(f)
-
-                if cached_product.get('price') is not None:
-                    return {
-                        'price_jpy': int(cached_product.get('price', 0)),
-                        'in_stock': cached_product.get('in_stock', False)
-                    }
-            except Exception as e:
-                logger.error(f"キャッシュ読み込みエラー: {asin} - {e}")
+            if product and product.get('amazon_price_jpy') is not None:
+                return {
+                    'price_jpy': int(product.get('amazon_price_jpy', 0)),
+                    'in_stock': product.get('amazon_in_stock', False)
+                }
+        except Exception as e:
+            logger.error(f"Master DB読み込みエラー: {asin} - {e}")
 
         return None
 
     def fill_cache_for_asin(self, asin: str) -> Optional[Dict[str, Any]]:
         """
-        SP-APIから商品情報を取得してキャッシュと Master DBを更新
+        SP-APIから商品情報を取得してMaster DBを更新
+
+        注: 関数名は後方互換性のため残していますが、
+        キャッシュへの保存は行わず、Master DBのみ更新します。
 
         Args:
             asin: 商品ASIN
@@ -175,15 +176,7 @@ class EbayPriceSync:
                 logger.warning(f"  [SP-API] {asin} - データが取得できませんでした")
                 return None
 
-            # タイムスタンプを追加
-            now = datetime.now().isoformat()
-            product_data['price_updated_at'] = now
-            product_data['stock_updated_at'] = now
-
-            # キャッシュに保存
-            self.cache.set_product(asin, product_data)
-
-            # Master DBも更新
+            # Master DBを更新
             price_jpy = int(product_data.get('price', 0))
             self.master_db.update_amazon_info(
                 asin=asin,
@@ -230,12 +223,18 @@ class EbayPriceSync:
         logger.info(f"│ 【eBay価格同期】アカウント: {account.get('name', account_id)} ({account_id})" + " " * (68 - len(f" 【eBay価格同期】アカウント: {account.get('name', account_id)} ({account_id})") - 2) + "│")
         logger.info("└" + "─" * 68 + "┘")
 
-        # 出品一覧を取得（出品済みのみ）
-        listings = self.master_db.get_listings_by_account(
+        # 出品一覧を取得（listed + pendingも含む、在庫復活対象のため）
+        # statusフィルタなしで全件取得し、後でフィルタ
+        all_listings = self.master_db.get_listings_by_account(
             platform='ebay',
-            account_id=account_id,
-            status='listed'
+            account_id=account_id
         )
+
+        # listedまたはpendingの商品のみ処理（新しくqueueに追加した商品も含める）
+        listings = [
+            listing for listing in all_listings
+            if listing.get('status') in ['listed', 'pending']
+        ]
 
         # テスト用：商品数を制限
         if max_items and len(listings) > max_items:
@@ -348,6 +347,58 @@ class EbayPriceSync:
 
             return
 
+        # 在庫復活チェック（Amazon在庫あり）
+        # eBayの現在の在庫数を確認し、0の場合は1に復活させる
+        # さらに、Offerが UNPUBLISHED の場合は再公開（relist）する
+        try:
+            ebay_item = ebay_client.get_inventory_item(sku)
+            if ebay_item:
+                ebay_quantity = ebay_item.get('availability', {}).get('shipToLocationAvailability', {}).get('quantity', 1)
+
+                if ebay_quantity == 0:
+                    logger.info(f"  [STOCK_RESTORE] {asin} - Amazon在庫あり、eBay在庫0→1に復活")
+
+                    if dry_run:
+                        logger.info(f"    → DRY RUN: 実際の更新はスキップ")
+                        self.stats['stock_restored'] += 1
+                    else:
+                        # 在庫数を1に復活
+                        success = ebay_client.update_inventory_quantity(sku, 1)
+
+                        if success:
+                            logger.info(f"    → 在庫数1に復活成功")
+                            self.stats['stock_restored'] += 1
+                        else:
+                            logger.error(f"    → 在庫数復活失敗")
+                            self.stats['errors'] += 1
+
+            # Offerの状態を確認（UNPUBLISHED なら再公開）
+            offers = ebay_client.get_offers_by_sku(sku)
+            if offers:
+                offer = offers[0]
+                offer_status = offer.get('status', '')
+
+                if offer_status == 'UNPUBLISHED':
+                    logger.info(f"  [RELIST] {asin} - Offer status=UNPUBLISHED、再公開します")
+
+                    if dry_run:
+                        logger.info(f"    → DRY RUN: 実際の再公開はスキップ")
+                        self.stats['relisted'] += 1
+                    else:
+                        # Offer再公開（merchantLocationKeyがない場合は自動補完）
+                        listing_id = ebay_client.relist_offer(offer_id, sku)
+
+                        if listing_id:
+                            logger.info(f"    → 再公開成功! listingId={listing_id}")
+                            self.stats['relisted'] += 1
+                        else:
+                            logger.error(f"    → 再公開失敗")
+                            self.stats['errors'] += 1
+
+        except Exception as e:
+            # 在庫復活処理のエラーは警告扱い（価格同期は継続）
+            logger.warning(f"  [WARN] {asin} - 在庫復活/再公開チェックエラー（価格同期は継続）: {e}")
+
         # 販売価格を計算（USD）
         new_price_usd = self.calculate_selling_price_usd(amazon_price_jpy)
 
@@ -453,8 +504,10 @@ class EbayPriceSync:
         logger.info(f"価格更新:")
         logger.info(f"  - 更新した商品: {self.stats['price_updated']}件")
         logger.info(f"  - 更新不要: {self.stats['no_update_needed']}件")
-        logger.info(f"在庫切れ処理:")
-        logger.info(f"  - 在庫0に更新: {self.stats['out_of_stock_updated']}件")
+        logger.info(f"在庫管理:")
+        logger.info(f"  - 在庫0に更新（Amazon在庫切れ）: {self.stats['out_of_stock_updated']}件")
+        logger.info(f"  - 在庫1に復活: {self.stats['stock_restored']}件")
+        logger.info(f"  - Offer再公開（UNPUBLISHED→PUBLISHED）: {self.stats['relisted']}件")
         logger.info(f"スキップ:")
         logger.info(f"  - offer_id未登録: {self.stats['skipped_no_offer_id']}件")
         logger.info(f"  - Amazon価格情報なし: {self.stats['skipped_no_amazon_info']}件")
@@ -463,6 +516,7 @@ class EbayPriceSync:
         logger.info(f"エラー: {self.stats['errors']}件")
 
         # 内訳の合計チェック
+        # Note: relisted は price_updated/no_update_needed と重複してカウントされるため除外
         total_accounted = (
             self.stats['price_updated'] +
             self.stats['no_update_needed'] +

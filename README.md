@@ -6,6 +6,7 @@ BASE、eBay、Yahoo!オークション、メルカリなど、複数のECプラ�
 
 - 🆕 **商品ソーシング自動化**: SellerSpriteから2000+件/日のASIN自動抽出・出品連携
 - 🆕 **ブラウザ自動化**: PlaywrightによるAPIなしプラットフォーム対応（Amazon Business住所管理等）
+- 🆕 **禁止商品管理**: 既存DB監査・自動チェック・ブロックリストで規約違反を防止
 - **中央集権型在庫管理**: SQLiteベースのマスタDBで全商品・出品を統一管理
 - **Amazon情報キャッシュ**: SP-APIの情報をローカルキャッシュしてレート制限を回避
 - **効率的な処理**: SP-APIバッチ取得（最大20倍高速化） + 複数ECアカウント並列同期
@@ -657,6 +658,9 @@ Private
 ### セットアップ・基本
 - [QUICKSTART.md](QUICKSTART.md) - クイックスタートガイド
 - [docs/REMAINING_ISSUES.md](docs/REMAINING_ISSUES.md) - 残存課題リスト
+
+### 🆕 禁止商品管理
+- [docs/PROHIBITED_ITEMS_MANAGEMENT.md](docs/PROHIBITED_ITEMS_MANAGEMENT.md) - 禁止商品管理システム完全ガイド（既存DB監査・削除・ブロックリスト）
 
 ### 🆕 共通基盤
 - [common/browser/README.md](common/browser/README.md) - Playwrightブラウザオートメーション基盤

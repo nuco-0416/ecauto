@@ -163,6 +163,84 @@ class EbayAPIClient:
         except requests.exceptions.RequestException:
             return False
 
+    def get_all_inventory_items(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+        """
+        全Inventory Itemsを取得（ページネーション対応）
+
+        Args:
+            limit: 1ページあたりの取得件数（最大100）
+            offset: オフセット（取得開始位置）
+
+        Returns:
+            list: Inventory Itemsのリスト
+                [
+                    {
+                        'sku': str,
+                        'availability': {
+                            'shipToLocationAvailability': {
+                                'quantity': int
+                            }
+                        },
+                        'product': {...},
+                        ...
+                    },
+                    ...
+                ]
+        """
+        url = f"{self.base_url}/sell/inventory/v1/inventory_item"
+
+        params = {
+            'limit': min(limit, 100),  # 最大100
+            'offset': offset
+        }
+
+        try:
+            response = requests.get(url, headers=self._get_headers(), params=params)
+
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('inventoryItems', [])
+            else:
+                return []
+
+        except requests.exceptions.RequestException:
+            return []
+
+    def get_all_inventory_items_paginated(self, max_items: int = None) -> List[Dict[str, Any]]:
+        """
+        全Inventory Itemsを取得（自動ページネーション）
+
+        Args:
+            max_items: 最大取得件数（Noneの場合は全件取得）
+
+        Returns:
+            list: Inventory Itemsのリスト
+        """
+        all_items = []
+        offset = 0
+        limit = 100
+
+        while True:
+            items = self.get_all_inventory_items(limit=limit, offset=offset)
+
+            if not items:
+                break
+
+            all_items.extend(items)
+
+            # 最大件数チェック
+            if max_items and len(all_items) >= max_items:
+                all_items = all_items[:max_items]
+                break
+
+            # 次のページがない場合は終了
+            if len(items) < limit:
+                break
+
+            offset += limit
+
+        return all_items
+
     # =========================================================================
     # Offer 操作
     # =========================================================================
@@ -242,63 +320,6 @@ class EbayAPIClient:
 
         except requests.exceptions.RequestException:
             return None
-
-    def get_all_inventory_items(self, limit: int = 200) -> List[Dict[str, Any]]:
-        """
-        全Inventory Item一覧取得（ページネーション対応）
-
-        Args:
-            limit: 1回のリクエストで取得する最大件数（デフォルト: 200）
-
-        Returns:
-            list: 全Inventory Itemリスト（SKUを含む）
-        """
-        all_items = []
-        url = f"{self.base_url}/sell/inventory/v1/inventory_item"
-        params = {'limit': limit}
-        page = 1
-
-        while url:
-            try:
-                print(f"[DEBUG] Request URL: {url}")
-                print(f"[DEBUG] Request Params: {params}")
-
-                response = requests.get(url, headers=self._get_headers(), params=params)
-
-                print(f"[DEBUG] Actual Request URL: {response.url}")
-                print(f"[DEBUG] API Response Status: {response.status_code}")
-
-                if response.status_code == 200:
-                    data = response.json()
-                    items = data.get('inventoryItems', [])
-                    total = data.get('total', 0)
-
-                    print(f"[DEBUG] Page {page}: Inventory Items retrieved: {len(items)}, Total in API: {total}, Accumulated: {len(all_items) + len(items)}")
-
-                    all_items.extend(items)
-
-                    # 次のページがあるかチェック
-                    next_url = data.get('next')
-                    if next_url:
-                        # 相対URLの場合は絶対URLに変換
-                        if next_url.startswith('/'):
-                            url = self.base_url + next_url
-                        else:
-                            url = next_url
-                        params = {}  # nextにはすでにparamsが含まれている
-                        page += 1
-                    else:
-                        break
-                else:
-                    print(f"[DEBUG] API Error Response: {response.text[:500]}")
-                    break
-
-            except requests.exceptions.RequestException as e:
-                print(f"[DEBUG] Request Exception: {e}")
-                break
-
-        print(f"[DEBUG] Total Inventory Items retrieved: {len(all_items)}")
-        return all_items
 
     def get_all_offers(self, limit: int = 200) -> List[Dict[str, Any]]:
         """
@@ -404,6 +425,71 @@ class EbayAPIClient:
 
         except requests.exceptions.RequestException:
             return False
+
+    def relist_offer(self, offer_id: str, sku: str, merchant_location_key: str = 'JP_LOCATION') -> Optional[str]:
+        """
+        UNPUBLISHED状態のOfferを再公開（relist）
+
+        販売済み等でUNPUBLISHED状態になったOfferを再公開します。
+        merchantLocationKeyが設定されていない場合は、Offerを更新してから再公開します。
+
+        Args:
+            offer_id: Offer ID
+            sku: 商品SKU
+            merchant_location_key: 発送元ロケーションキー（デフォルト: JP_LOCATION）
+
+        Returns:
+            str or None: 新しいListing ID（失敗時はNone）
+        """
+        # 既存Offer取得
+        offer = self.get_offer(offer_id)
+        if not offer:
+            print(f"  [ERROR] relist_offer: Offer取得失敗 offer_id={offer_id}")
+            return None
+
+        # Offerのステータスを確認
+        offer_status = offer.get('status', '')
+        if offer_status != 'UNPUBLISHED':
+            print(f"  [WARN] relist_offer: OfferはUNPUBLISHED状態ではありません (status={offer_status})")
+            # 既にPUBLISHEDの場合はlisting IDを返す
+            if offer_status == 'PUBLISHED':
+                return offer.get('listing', {}).get('listingId')
+            return None
+
+        # merchantLocationKeyが設定されていない場合は更新
+        if not offer.get('merchantLocationKey'):
+            print(f"  [INFO] relist_offer: merchantLocationKeyが未設定、更新します")
+
+            # Offerを更新
+            offer['merchantLocationKey'] = merchant_location_key
+
+            # 読み取り専用フィールドを削除
+            fields_to_remove = ['availableQuantity', 'offerId', 'listing', 'status']
+            update_offer = {k: v for k, v in offer.items() if k not in fields_to_remove}
+
+            url = f"{self.base_url}/sell/inventory/v1/offer/{offer_id}"
+
+            try:
+                response = requests.put(url, headers=self._get_headers(), json=update_offer)
+
+                if response.status_code not in [200, 204]:
+                    print(f"  [ERROR] relist_offer: Offer更新失敗 status={response.status_code}")
+                    try:
+                        error_data = response.json()
+                        print(f"  [ERROR] レスポンス: {error_data}")
+                    except:
+                        print(f"  [ERROR] レスポンステキスト: {response.text[:500]}")
+                    return None
+
+                print(f"  [INFO] relist_offer: Offer更新成功 (merchantLocationKey={merchant_location_key})")
+
+            except requests.exceptions.RequestException as e:
+                print(f"  [ERROR] relist_offer: Offer更新エラー: {e}")
+                return None
+
+        # Offer再公開
+        listing_id = self.publish_offer(offer_id)
+        return listing_id
 
     # =========================================================================
     # 価格・在庫更新

@@ -7,12 +7,10 @@ Amazon在庫切れ時に全プラットフォームで商品を非公開にし�
 
 import sys
 import logging
-import os
 import signal
 from pathlib import Path
 from datetime import datetime
 import time
-from dotenv import load_dotenv
 
 # ロガーの設定
 logger = logging.getLogger(__name__)
@@ -43,10 +41,8 @@ project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from inventory.core.master_db import MasterDB
-from inventory.core.cache_manager import AmazonProductCache
 from platforms.base.accounts.manager import AccountManager
 from platforms.base.core.api_client import BaseAPIClient
-from integrations.amazon.sp_api_client import AmazonSPAPIClient
 
 
 class StockVisibilitySync:
@@ -54,32 +50,22 @@ class StockVisibilitySync:
     在庫切れ時の自動非公開処理クラス
     """
 
-    def __init__(self):
-        """初期化"""
-        # シグナルハンドラを登録
-        signal.signal(signal.SIGINT, _signal_handler)
-        signal.signal(signal.SIGTERM, _signal_handler)
+    def __init__(self, register_signal_handler: bool = False):
+        """
+        初期化
+
+        Args:
+            register_signal_handler: シグナルハンドラを登録するか（スタンドアロン実行時のみTrue）
+                                      daemon経由で実行される場合はFalse（daemon_base.pyが管理）
+        """
+        # スタンドアロン実行時のみシグナルハンドラを登録
+        # daemon経由の場合はdaemon_base.pyのシグナルハンドラが管理
+        if register_signal_handler:
+            signal.signal(signal.SIGINT, _signal_handler)
+            signal.signal(signal.SIGTERM, _signal_handler)
 
         self.master_db = MasterDB()
-        self.cache = AmazonProductCache()
         self.account_manager = AccountManager()
-
-        # SP-APIクライアント初期化（キャッシュ補完用）
-        load_dotenv(project_root / '.env')
-        try:
-            sp_api_credentials = {
-                'refresh_token': os.getenv('REFRESH_TOKEN'),
-                'lwa_app_id': os.getenv('LWA_APP_ID'),
-                'lwa_client_secret': os.getenv('LWA_CLIENT_SECRET')
-            }
-            self.sp_api_client = AmazonSPAPIClient(sp_api_credentials)
-            self.sp_api_available = True
-            logger.info("SP-APIクライアント初期化成功（キャッシュ補完機能有効）")
-        except Exception as e:
-            logger.warning(f"SP-APIクライアント初期化失敗: {e}")
-            logger.warning("キャッシュ補完機能は無効化されます")
-            self.sp_api_client = None
-            self.sp_api_available = False
 
         # 統計情報
         self.stats = {
@@ -88,10 +74,7 @@ class StockVisibilitySync:
             'in_stock_count': 0,
             'updated_to_hidden': 0,
             'updated_to_public': 0,
-            'cache_missing': 0,
-            'cache_incomplete': 0,
-            'cache_fill_success': 0,
-            'cache_fill_failed': 0,
+            'no_stock_info': 0,
             'errors': 0,
             'errors_detail': []
         }
@@ -111,9 +94,6 @@ class StockVisibilitySync:
         logger.info(f"実行モード: {'DRY RUN（実際の更新なし）' if dry_run else '本番実行'}")
         logger.info(f"開始時刻: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print()
-
-        # キャッシュ欠損ASINを収集するリスト
-        missing_cache_asins = []
 
         # アクティブなアカウント取得
         accounts = self.account_manager.get_active_accounts()
@@ -163,14 +143,6 @@ class StockVisibilitySync:
                         logger.info("シャットダウン要求を検出しました（出品ループ中断）")
                         break
 
-                    asin = listing['asin']
-
-                    # キャッシュ欠損をチェック
-                    cache_file = self.cache.cache_dir / f'{asin}.json'
-                    if not cache_file.exists():
-                        missing_cache_asins.append(asin)
-                        logger.debug(f"  [CACHE MISS] {asin} - Master DBフォールバック")
-
                     self._sync_listing(listing, base_client, dry_run)
 
             except Exception as e:
@@ -180,71 +152,6 @@ class StockVisibilitySync:
                     'account_id': account_id,
                     'error': str(e)
                 })
-
-        # ━━━ キャッシュ補完処理（処理完了後） ━━━
-        if missing_cache_asins and not dry_run and self.sp_api_available:
-            # 重複を削除
-            missing_cache_asins = list(set(missing_cache_asins))
-
-            logger.info("")
-            logger.info("━" * 70)
-            logger.info("キャッシュ補完処理（次回の処理高速化のため）")
-            logger.info("━" * 70)
-            logger.info(f"欠損キャッシュ: {len(missing_cache_asins)}件")
-            logger.info(f"SP-APIバッチで一括取得中...")
-
-            # 推定時間を表示
-            batch_count = (len(missing_cache_asins) + 19) // 20
-            estimated_minutes = (batch_count * 12) / 60
-            logger.info(f"推定時間: 約{estimated_minutes:.1f}分 ({batch_count}バッチ)")
-            print()
-
-            try:
-                # SP-APIバッチで一括取得
-                batch_results = self.sp_api_client.get_prices_batch(
-                    missing_cache_asins,
-                    batch_size=20
-                )
-
-                # キャッシュに保存 + Master DB更新
-                success_count = 0
-                failed_count = 0
-
-                for asin, price_info in batch_results.items():
-                    if price_info and price_info.get('price') is not None:
-                        # キャッシュに保存
-                        self.cache.set_product(asin, price_info)
-
-                        # Master DBも更新（最新情報で同期）
-                        try:
-                            self.master_db.update_amazon_info(
-                                asin=asin,
-                                price_jpy=int(price_info['price']),
-                                in_stock=price_info.get('in_stock', False)
-                            )
-                        except Exception as e:
-                            logger.warning(f"  [WARN] {asin} - Master DB更新失敗: {e}")
-
-                        success_count += 1
-                    else:
-                        failed_count += 1
-                        logger.warning(f"  [WARN] {asin} - SP-API取得失敗")
-
-                logger.info("")
-                logger.info(f"補完完了: 成功 {success_count}件 / 失敗 {failed_count}件")
-                logger.info("━" * 70)
-                print()
-
-                self.stats['cache_fill_success'] = success_count
-                self.stats['cache_fill_failed'] = failed_count
-
-            except Exception as e:
-                logger.error(f"キャッシュ補完中にエラー: {e}")
-                self.stats['cache_fill_failed'] = len(missing_cache_asins)
-        elif missing_cache_asins and dry_run:
-            logger.info(f"\n[DRY RUN] キャッシュ補完をスキップ（{len(missing_cache_asins)}件）\n")
-        elif missing_cache_asins and not self.sp_api_available:
-            logger.warning(f"\n[警告] SP-API未初期化のため、キャッシュ補完をスキップ（{len(missing_cache_asins)}件）\n")
 
         # 統計表示
         self._print_summary()
@@ -273,39 +180,12 @@ class StockVisibilitySync:
             logger.info(f"  [SKIP] {asin} - 商品情報が見つかりません")
             return
 
-        # Amazon在庫状況をチェック（キャッシュ優先、TTL無視）
-        amazon_in_stock = None
-
-        # まずキャッシュから取得を試みる（TTL無視）
-        if True:
-            import json
-            cache_file = self.cache.cache_dir / f'{asin}.json'
-
-            if cache_file.exists():
-                try:
-                    with open(cache_file, 'r', encoding='utf-8') as f:
-                        cached_product = json.load(f)
-
-                    # in_stockフィールドが存在するかチェック（欠損チェック）
-                    if cached_product.get('in_stock') is not None:
-                        amazon_in_stock = cached_product.get('in_stock', False)
-                    else:
-                        logger.error(f"  [SKIP] {asin} - キャッシュの在庫情報が欠損しています（API取得エラーの可能性）")
-                        self.stats['cache_incomplete'] += 1
-                        return
-                except Exception as e:
-                    logger.error(f"  [SKIP] {asin} - キャッシュ読み込みエラー: {e}")
-                    self.stats['errors'] += 1
-                    return
-            else:
-                # キャッシュがない場合、Master DBの値を使用（処理完了後にキャッシュ補完される）
-                logger.debug(f"  [FALLBACK] {asin} - Master DBから在庫情報を使用")
-                self.stats['cache_missing'] += 1
-
-                amazon_in_stock = product.get('amazon_in_stock')
-                if amazon_in_stock is None:
-                    logger.info(f"  [SKIP] {asin} - Master DBにも在庫情報がありません")
-                    return
+        # Amazon在庫状況をチェック（マスタDBから直接取得）
+        amazon_in_stock = product.get('amazon_in_stock')
+        if amazon_in_stock is None:
+            logger.debug(f"  [SKIP] {asin} - 在庫情報がありません")
+            self.stats['no_stock_info'] += 1
+            return
 
         # 目標のvisibilityを決定
         if amazon_in_stock:
@@ -373,29 +253,19 @@ class StockVisibilitySync:
         logger.info(f"処理した商品数: {self.stats['total_products']}件")
         logger.info(f"  - 在庫あり: {self.stats['in_stock_count']}件")
         logger.info(f"  - 在庫切れ: {self.stats['out_of_stock_count']}件")
-        print()
-        logger.info(f"キャッシュ状態:")
-        logger.info(f"  - キャッシュ欠損（Master DB使用）: {self.stats['cache_missing']}件")
-        logger.info(f"  - キャッシュ不完全（スキップ）: {self.stats['cache_incomplete']}件")
-        if self.stats['cache_fill_success'] > 0 or self.stats['cache_fill_failed'] > 0:
-            logger.info(f"  - キャッシュ補完（成功/失敗）: {self.stats['cache_fill_success']}/{self.stats['cache_fill_failed']}件")
+        if self.stats['no_stock_info'] > 0:
+            logger.info(f"  - 在庫情報なし（スキップ）: {self.stats['no_stock_info']}件")
         print()
         logger.info(f"更新した商品数:")
         logger.info(f"  - 非公開に変更: {self.stats['updated_to_hidden']}件")
         logger.info(f"  - 公開に変更: {self.stats['updated_to_public']}件")
         print()
-        logger.error(f"エラー: {self.stats['errors']}件")
+        logger.info(f"エラー: {self.stats['errors']}件")
 
         if self.stats['errors_detail']:
             logger.error("\nエラー詳細:")
             for error in self.stats['errors_detail'][:10]:  # 最大10件表示
                 logger.error(f"  - {error}")
-
-        # 重要な警告を表示
-        if self.stats['cache_incomplete'] > 0:
-            print()
-            logger.warning(f"警告: {self.stats['cache_incomplete']}件の商品でキャッシュが不完全でした。")
-            logger.warning("  → SP-APIエラーの可能性があります。")
 
         logger.info("=" * 70)
         logger.info(f"終了時刻: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -422,8 +292,8 @@ def main():
 
     args = parser.parse_args()
 
-    # 同期処理実行
-    sync = StockVisibilitySync()
+    # 同期処理実行（スタンドアロン実行時はシグナルハンドラを登録）
+    sync = StockVisibilitySync(register_signal_handler=True)
     stats = sync.sync_all_listings(
         platform=args.platform,
         dry_run=args.dry_run

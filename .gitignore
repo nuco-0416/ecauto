@@ -70,3 +70,5 @@ Thumbs.db
 test_*.py
 *.bak
 *.tmp
+# Claude Code personal settings
+.claude/settings.local.json

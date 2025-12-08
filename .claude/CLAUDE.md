@@ -4,23 +4,23 @@ This document defines the project's rules, objectives, and progress management m
 
 ## Top-Level Rules
 
-- このプロンプトは ecauto プロジェクト（C:\Users\hiroo\Documents\GitHub\ecauto）についてのルールを規定しています。
+- このプロンプトは ecauto プロジェクト（/home/nuc_o/github/ecauto）についてのルールを規定しています。
 - 本プロジェクトは完全なスタンドアロンであることが前提です。レガシーの実装への参照・依存が発生しないように進めてください。
 - タイムゾーンについて：実行環境はJSTを想定しています。明示的にJSTと異なるタイムゾーンでの実行が想定されていない限り時間帯関連の処理、実装を進める場合にはJSTを指定してください。
 
 ### 仕様、作業履歴について
 - 仕様についての確認やエラー原因の分析、実装に関する矛盾の確認などについてはドキュメントディレクトリを参照してください。
-- 仕様、作業履歴などについてのドキュメントは　C:\Users\hiroo\Documents\GitHub\ecauto\docs　に保存されています。
+- 仕様、作業履歴などについてのドキュメントは /home/nuc_o/github/ecauto/docs に保存されています。
 
 ## Programming Rules
 
 - 【重要！】API名、メソッド名、変数名などを記述するときは必ず確実な根拠となるドキュメントやデータベース、ソースコードを参照してください。元になる変数やメソッドが見つからない場合は絶対に推測でコードを記述しないこと。その場合には中断してユーザーに報告してください。
-- **Python実行の標準形**：必ず以下の形式でPowerShell経由で実行すること
+- **Python実行の標準形**：必ず以下の形式で仮想環境のPythonを実行すること
   ```
-  powershell -Command "& 'C:\Users\hiroo\Documents\GitHub\ecauto\venv\Scripts\python.exe' スクリプトパス [オプション]"
+  /home/nuc_o/github/ecauto/venv/bin/python スクリプトパス [オプション]
   ```
-  - 出力制限が必要な場合：`2>&1 | Select-Object -Last 50` を末尾に追加
-  - この形式以外（python直接実行、相対パス等）は使用禁止
+  - 出力制限が必要な場合：`2>&1 | tail -n 50` を末尾に追加
+  - この形式以外（システムのpython直接実行、相対パス等）は使用禁止
 - テスト用スクリプトを作成する場合には処理の完了後に削除してください（プロジェクトディレクトリの保守のため）
 - 既存コードに変更を加える場合には必ずバックアップを用意して意図しない不具合が起こった場合に巻き戻しができる状態で作業してください。
 - 価格設定や在庫管理に関しての仕様の独断での変更は絶対にNGです。実装上で矛盾や問題が発生した場合にはユーザーに確認をしてください。
@@ -42,7 +42,7 @@ This document defines the project's rules, objectives, and progress management m
 1. **第一優先：本番スクリプトでの直接テスト**
    - コマンドラインオプション（--dry-run, --max-items など）を活用して少数データでテスト
    - 実際の使用方法と完全に同じ条件でテストする
-   - 例：`venv\Scripts\python.exe platforms\base\scripts\sync_prices.py --dry-run --max-items 20 --account base_account_1`
+   - 例：`venv/bin/python platforms/base/scripts/sync_prices.py --dry-run --max-items 20 --account base_account_1`
 
 2. **補助的：テストスクリプトの作成**
    - 複雑なロジックの単体テストが必要な場合のみ作成

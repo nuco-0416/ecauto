@@ -37,6 +37,7 @@ class ProhibitedItemChecker:
         self.categories = self.config.get('categories', {})
         self.keywords = self.config.get('keywords', {})
         self.brands = self.config.get('brands', {})
+        self.asin_whitelist = self.keywords.get('asin_whitelist', [])
         self.risk_thresholds = self.config.get('risk_thresholds', {
             'auto_block': 80,
             'manual_review': 50,
@@ -84,7 +85,22 @@ class ProhibitedItemChecker:
         # テキストを結合
         combined_text = f"{title_ja} {title_en} {description_ja} {description_en} {category} {brand}".lower()
 
-        # 1. ホワイトリストチェック
+        # 0. ASINホワイトリストチェック（最優先）
+        if asin in self.asin_whitelist:
+            return {
+                'asin': asin,
+                'risk_score': 0,
+                'risk_level': 'safe',
+                'matched_keywords': [],
+                'matched_categories': [],
+                'is_whitelisted': True,
+                'recommendation': 'auto_approve',
+                'details': {
+                    'whitelist_reason': f'ASINホワイトリスト登録済み: {asin}'
+                }
+            }
+
+        # 1. キーワードホワイトリストチェック
         is_whitelisted, whitelist_reason = self._check_whitelist(combined_text)
 
         if is_whitelisted:
