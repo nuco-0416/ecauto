@@ -11,11 +11,30 @@ from typing import Optional
 import sys
 
 
+class FlushingRotatingFileHandler(RotatingFileHandler):
+    """
+    emit後に必ずflushを行うRotatingFileHandler
+
+    通常のRotatingFileHandlerはバッファリングにより即時書き込みが保証されない。
+    このクラスは各ログレコードの出力後に必ずflushを実行し、
+    ログの書き込み遅延やローテーション時の問題を防止する。
+    """
+
+    def emit(self, record):
+        """ログレコードを出力し、即座にflushする"""
+        super().emit(record)
+        try:
+            self.flush()
+        except Exception:
+            # flush失敗時もログ出力自体は継続
+            pass
+
+
 def setup_logger(
     name: str,
     log_file: Optional[Path] = None,
     level: int = logging.INFO,
-    max_bytes: int = 10 * 1024 * 1024,  # 10MB
+    max_bytes: int = 5 * 1024 * 1024,  # 5MB（ローテーション問題防止のため小さめに設定）
     backup_count: int = 5,
     console_output: bool = True
 ) -> logging.Logger:
@@ -26,7 +45,7 @@ def setup_logger(
         name: ロガー名（通常はモジュール名やデーモン名）
         log_file: ログファイルのパス（指定しない場合は logs/{name}.log）
         level: ログレベル（デフォルト: INFO）
-        max_bytes: ログファイルの最大サイズ（デフォルト: 10MB）
+        max_bytes: ログファイルの最大サイズ（デフォルト: 5MB）
         backup_count: ローテーションで保持する古いログファイル数（デフォルト: 5）
         console_output: コンソールにも出力するか（デフォルト: True）
 
@@ -64,8 +83,8 @@ def setup_logger(
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    # ファイルハンドラ（ローテーション付き）
-    file_handler = RotatingFileHandler(
+    # ファイルハンドラ（ローテーション付き、即時フラッシュ対応）
+    file_handler = FlushingRotatingFileHandler(
         log_file,
         maxBytes=max_bytes,
         backupCount=backup_count,
@@ -87,36 +106,14 @@ def setup_logger(
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
-    # ISSUE #011対応: ルートloggerにもhandlerを設定
-    # これにより、すべての子logger（__name__を使用しているlogger）も
-    # 自動的にログを出力するようになる
+    # ISSUE #011対応（修正版）: ルートloggerへのハンドラ設定
+    # 注意: 同一ファイルへの複数RotatingFileHandlerは、ローテーション時に
+    # 競合を起こしログ出力が停止する問題があるため、ファイルハンドラは追加しない。
+    # コンソールハンドラのみ追加することで、子logger（__name__使用）の出力もカバー。
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
 
-    # ルートloggerに同じファイルへのハンドラがあるかチェック
-    # （他のライブラリが先にハンドラを設定している場合に対応）
-    log_file_str = str(log_file)
-    has_same_file_handler = False
-    for handler in root_logger.handlers:
-        if isinstance(handler, (RotatingFileHandler, logging.FileHandler)):
-            if hasattr(handler, 'baseFilename') and handler.baseFilename == log_file_str:
-                has_same_file_handler = True
-                break
-
-    # 同じファイルへのハンドラがなければ追加
-    if not has_same_file_handler:
-        # ファイルハンドラを追加（ルートロガー用に新しいハンドラを作成）
-        root_file_handler = RotatingFileHandler(
-            log_file,
-            maxBytes=max_bytes,
-            backupCount=backup_count,
-            encoding='utf-8'
-        )
-        root_file_handler.setLevel(level)
-        root_file_handler.setFormatter(formatter)
-        root_logger.addHandler(root_file_handler)
-
-    # コンソールハンドラも必要であれば追加（重複チェック）
+    # コンソールハンドラのみ追加（重複チェック付き）
     if console_output:
         has_console_handler = any(
             isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)

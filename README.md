@@ -11,7 +11,7 @@ BASE、eBay、Yahoo!オークション、メルカリなど、複数のECプラ�
 - **Amazon情報キャッシュ**: SP-APIの情報をローカルキャッシュしてレート制限を回避
 - **効率的な処理**: SP-APIバッチ取得（最大20倍高速化） + 複数ECアカウント並列同期
 - **スケジュール出品**: 時間帯分散（6時〜23時JST）で露出を最大化
-- **複数アカウント対応**: カテゴリ別の自動振り分けで1日の出品制限を回避
+- **複数アカウント対応**: カテゴリ別の自動振り分けで1日の出品制限を回避（[カテゴリルーティング](inventory/docs/category_routing_for_product_registration.md)）
 - **プラットフォーム横断**: 統一インターフェースで複数ECを管理
 
 ## プロジェクト構成
@@ -674,6 +674,7 @@ Private
 ### BASE統合
 - [platforms/base/README.md](platforms/base/README.md) - BASE統合ドキュメント
 - [platforms/base/TOKEN_MANAGEMENT.md](platforms/base/TOKEN_MANAGEMENT.md) - トークン管理ガイド
+- [inventory/docs/category_routing_for_product_registration.md](inventory/docs/category_routing_for_product_registration.md) - 🆕 カテゴリルーティング（カテゴリ特化ショップ振り分け）
 
 ### 🆕 Amazon Business（ブラウザ自動化）
 - [platforms/amazon_business/README.md](platforms/amazon_business/README.md) - Amazon Business自動化ドキュメント
