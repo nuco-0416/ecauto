@@ -30,6 +30,7 @@ from inventory.core.listing_manager import ListingManager
 from inventory.core.prohibited_item_checker import ProhibitedItemChecker
 from inventory.core.blocklist_manager import BlocklistManager
 from common.pricing import PriceCalculator
+from common.category_router import CategoryRouter
 from scheduler.queue_manager import UploadQueueManager
 from shared.utils.sku_generator import generate_sku
 from shared.utils.logger import setup_logger
@@ -40,7 +41,7 @@ class CandidateImporter:
     sourcing_candidatesからmaster.dbへの連携クラス
     """
 
-    def __init__(self, limit: Optional[int] = None, dry_run: bool = False, account_limits: Optional[Dict[str, int]] = None, check_prohibited: bool = True, add_to_listings: bool = True, add_to_queue: bool = True):
+    def __init__(self, limit: Optional[int] = None, dry_run: bool = False, account_limits: Optional[Dict[str, int]] = None, check_prohibited: bool = True, add_to_listings: bool = True, add_to_queue: bool = True, use_category_routing: bool = False):
         """
         Args:
             limit: 処理する最大件数（Noneの場合は全件）
@@ -49,6 +50,7 @@ class CandidateImporter:
             check_prohibited: 禁止商品チェックを有効にする（デフォルト: True）
             add_to_listings: Trueの場合、listingsテーブルに追加（デフォルト: True）
             add_to_queue: Trueの場合、upload_queueに追加（デフォルト: True）
+            use_category_routing: Trueの場合、カテゴリに基づいてアカウントを自動振り分け
         """
         self.limit = limit
         self.dry_run = dry_run
@@ -56,6 +58,7 @@ class CandidateImporter:
         self.check_prohibited = check_prohibited
         self.add_to_listings = add_to_listings
         self.add_to_queue = add_to_queue
+        self.use_category_routing = use_category_routing
 
         # ロガーを設定（ファイルとコンソール両方に出力）
         self.logger = setup_logger('import_candidates_to_master', console_output=True)
@@ -86,6 +89,16 @@ class CandidateImporter:
 
         # ブロックリストマネージャー初期化
         self.blocklist_manager = BlocklistManager()
+
+        # カテゴリルーター初期化
+        if self.use_category_routing:
+            self.category_router = CategoryRouter()
+            if not self.category_router.is_enabled:
+                self.logger.warning("カテゴリルーティングが無効です（config/category_routing.yaml の enabled: true を確認）")
+                self.use_category_routing = False
+                self.category_router = None
+        else:
+            self.category_router = None
 
         # SP-API認証情報を環境変数から取得
         load_dotenv(project_root / '.env')
@@ -154,6 +167,10 @@ class CandidateImporter:
             self.logger.info(f"処理件数制限: {self.limit if self.limit else '全件'}")
 
         self.logger.info(f"対象アカウント: {', '.join(self.accounts)}")
+        if self.use_category_routing:
+            self.logger.info("振り分け方法: カテゴリルーティング（自動）")
+            self.logger.info(f"  デフォルトアカウント: {self.category_router.default_account}")
+            self.logger.info(f"  ルーティングルール: {len(self.category_router.get_routing_rules())}件")
 
         # 登録対象テーブルの表示
         tables_to_register = []
@@ -195,9 +212,14 @@ class CandidateImporter:
             self.logger.info("[DRY RUN] SP-API呼び出しをスキップ")
             products_data = {}
 
-        # 3. アカウント割り振り（1000件ずつランダム）
+        # 3. アカウント割り振り
         self.logger.info("[3/6] アカウント割り振り中...")
-        account_assignments = self._assign_accounts(asins)
+        if self.use_category_routing:
+            # カテゴリルーティング使用時は、products_dataからカテゴリを取得して振り分け
+            account_assignments = self._assign_accounts_by_category(asins, products_data)
+        else:
+            # 従来通りランダム or account_limits指定で振り分け
+            account_assignments = self._assign_accounts(asins)
         for account_id, assigned_asins in account_assignments.items():
             self.logger.info(f"      {account_id}: {len(assigned_asins)}件")
 
@@ -494,6 +516,53 @@ class CandidateImporter:
 
         return account_assignments
 
+    def _assign_accounts_by_category(
+        self,
+        asins: List[str],
+        products_data: Dict[str, Dict[str, Any]]
+    ) -> Dict[str, List[str]]:
+        """
+        カテゴリに基づいてアカウント割り振り
+
+        Args:
+            asins: ASINのリスト
+            products_data: ASIN別の商品情報（categoryを含む）
+
+        Returns:
+            dict: アカウントID別のASINリスト
+        """
+        account_assignments = {account_id: [] for account_id in self.accounts}
+
+        unassigned_count = 0
+
+        for asin in asins:
+            # 商品データからカテゴリを取得
+            product_data = products_data.get(asin, {})
+            category = product_data.get('category', '')
+
+            # カテゴリルーターでアカウントを決定
+            account_id = self.category_router.route(category, self.accounts)
+
+            if account_id:
+                if account_id in account_assignments:
+                    account_assignments[account_id].append(asin)
+                else:
+                    # アクティブでないアカウントが返された場合はデフォルトへ
+                    default_account = self.category_router.default_account
+                    if default_account and default_account in account_assignments:
+                        account_assignments[default_account].append(asin)
+                    else:
+                        unassigned_count += 1
+            else:
+                unassigned_count += 1
+
+        if unassigned_count > 0:
+            self.logger.warning(f"  振り分け不可: {unassigned_count}件（カテゴリ不明またはルールなし）")
+
+        # 空のアカウントを除去
+        account_assignments = {k: v for k, v in account_assignments.items() if v}
+
+        return account_assignments
 
     def _update_candidate_status(self, asins: List[str], new_status: str):
         """
@@ -578,6 +647,11 @@ def main():
         action='store_true',
         help='productsテーブルのみに登録（listingsとqueueはスキップ）'
     )
+    parser.add_argument(
+        '--use-category-routing',
+        action='store_true',
+        help='config/category_routing.yaml に基づいてカテゴリでアカウントを自動振り分け'
+    )
 
     args = parser.parse_args()
 
@@ -599,7 +673,8 @@ def main():
         dry_run=args.dry_run,
         account_limits=account_limits,
         add_to_listings=add_to_listings,
-        add_to_queue=add_to_queue
+        add_to_queue=add_to_queue,
+        use_category_routing=args.use_category_routing
     )
     importer.run()
 

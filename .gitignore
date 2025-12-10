@@ -45,6 +45,16 @@ platforms/**/tokens/**
 **/credentials.json
 config/notifications.json
 
+# Google Cloud Service Account
+marketing/service_google_analytics/*.json
+
+# Shopify認証情報
+platforms/shopify/accounts/*.json
+platforms/shopify/accounts/*.txt
+
+# Blastmail認証情報
+marketing/service_blastmail/config/account_config.json
+
 # SellerSprite認証情報
 sourcing/data/sellersprite_cookies.json
 sourcing/data/chrome_profile/
@@ -74,3 +84,4 @@ test_*.py
 # Claude Code personal settings
 .claude/
 .claude/settings.local.json
+*:Zone.Identifier
