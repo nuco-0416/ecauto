@@ -1,0 +1,34 @@
+{
+    "accounts": [
+        {
+            "id": "blastmail_account_1",
+            "name": "アカウント1（例：メインアカウント）",
+            "active": true,
+            "credentials": {
+                "username": "YOUR_BLASTMAIL_ID_1",
+                "password": "YOUR_API_PASSWORD_1",
+                "api_key": "YOUR_API_KEY_1"
+            }
+        },
+        {
+            "id": "blastmail_account_2",
+            "name": "アカウント2（例：サブアカウント）",
+            "active": true,
+            "credentials": {
+                "username": "YOUR_BLASTMAIL_ID_2",
+                "password": "YOUR_API_PASSWORD_2",
+                "api_key": "YOUR_API_KEY_2"
+            }
+        },
+        {
+            "id": "blastmail_account_3",
+            "name": "アカウント3",
+            "active": true,
+            "credentials": {
+                "username": "YOUR_BLASTMAIL_ID_3",
+                "password": "YOUR_API_PASSWORD_3",
+                "api_key": "YOUR_API_KEY_3"
+            }
+        }
+    ]
+}
