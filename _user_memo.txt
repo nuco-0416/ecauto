@@ -1,1 +1,18 @@
+# WSL関連
 Windowsからファイルを移す場合: Windowsのエクスプローラーのアドレスバーに \\wsl$ と入力するとUbuntuのフォルダが見える
+
+# Ticket
+## platforms/
+- アカウント匿名化強化
+- YahooAuction移植
+- Shopee追加
+
+## finance_manager/
+- [DEBUG] 03_outputがプロジェクトルートに生成される
+- [DEV] コストデータの集約
+
+## scheduler/
+- カテゴリなしでローテーションする：事前に必須⇒プロキシなど匿名化ロジック実装
+
+## Sourcing/
+- AliExpress API

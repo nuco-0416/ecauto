@@ -1,0 +1,47 @@
+# カテゴリルーティング設定
+# 商品のカテゴリに基づいて出品先アカウントを自動振り分けする
+#
+# 使用方法:
+#   python sourcing/scripts/import_candidates_to_master.py --use-category-routing
+#   python inventory/scripts/assign_products_to_account.py --use-category-routing
+#
+# ルーティングの優先順位:
+#   1. priority が小さいアカウントから順にマッチング判定
+#   2. keywords のいずれかがカテゴリパスに含まれればマッチ
+#   3. どれにもマッチしない場合は default_account へ
+
+# ルーティング機能の有効/無効
+enabled: true
+
+# デフォルトアカウント（どのルールにもマッチしない場合）
+default_account: "base_account_2"
+
+# アカウント別ルーティングルール
+accounts:
+  # テスト用: カメラ専門店
+  base_account_3:
+    priority: 1
+    keywords:
+      - "カメラ"
+      - "三脚"
+      - "レンズ"
+      - "フィルター"
+      - "ストロボ"
+      - "撮影"
+
+  # 例: ガジェット専門店
+  # base_account_gadget:
+  #   priority: 2
+  #   keywords:
+  #     - "ヘッドホン"
+  #     - "イヤホン"
+  #     - "スピーカー"
+  #     - "充電"
+  #     - "モバイル"
+  #     - "スマホ"
+  #     - "タブレット"
+
+  # 例: 全ジャンル対応ショップ（category_filter なし = デフォルトの受け皿）
+  # base_account_2:
+  #   priority: 99
+  #   keywords: []  # 空 = 全ジャンル受け入れ
