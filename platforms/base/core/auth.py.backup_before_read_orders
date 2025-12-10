@@ -46,7 +46,7 @@ class BaseOAuthClient:
             'response_type': 'code',
             'client_id': self.client_id,
             'redirect_uri': self.redirect_uri,
-            'scope': 'read_items write_items read_orders'  # 必要なスコープ
+            'scope': 'read_items write_items'  # 必要なスコープ
         }
 
         if state:
@@ -95,7 +95,7 @@ class BaseOAuthClient:
         # BASEのAPIレスポンスにはscopeが含まれないため、明示的に追加
         # 認証時に要求したスコープを保存
         if 'scope' not in token_data:
-            token_data['scope'] = 'read_items write_items read_orders'
+            token_data['scope'] = 'read_items write_items'
 
         return token_data
 
@@ -138,7 +138,7 @@ class BaseOAuthClient:
             # BASEのAPIレスポンスにはscopeが含まれないため、明示的に追加
             # 認証時に要求したスコープを保存
             if 'scope' not in token_data:
-                token_data['scope'] = 'read_items write_items read_orders'
+                token_data['scope'] = 'read_items write_items'
 
             return token_data
 
