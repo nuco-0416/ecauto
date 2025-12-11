@@ -671,6 +671,9 @@ Private
 - [sourcing/docs/20251125_implementation_progress_report_v3.md](sourcing/docs/20251125_implementation_progress_report_v3.md) - Phase 1完了レポート
 - [sourcing/sources/sellersprite/USAGE.md](sourcing/sources/sellersprite/USAGE.md) - SellerSprite使い方
 
+### 商品登録パイプライン
+- [sourcing/scripts/README_for_register.md](/home/nuc_o/github/ecauto/sourcing/scripts/README_for_register.md) - 商品登録の流れ
+
 ### BASE統合
 - [platforms/base/README.md](platforms/base/README.md) - BASE統合ドキュメント
 - [platforms/base/TOKEN_MANAGEMENT.md](platforms/base/TOKEN_MANAGEMENT.md) - トークン管理ガイド
