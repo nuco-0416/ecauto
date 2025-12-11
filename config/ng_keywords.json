@@ -1,6 +1,6 @@
 {
   "description": "NGキーワード設定 - これらのキーワードが商品タイトル・説明文に含まれている場合、自動的に削除されます",
-  "version": "1.2",
+  "version": "1.3",
   "last_updated": "2025-12-12",
   "keywords": [
     "by Amazon",
@@ -8,6 +8,8 @@
     "【Amazon.co.jp 限定】",
     "【.co.jp限定】",
     "【.co.jp 限定】",
+    ".co.jp限定品",
+    ".co.jp限定の",
     ".co.jp限定",
     ".co.jp 限定",
     "Amazon",
@@ -16,5 +18,5 @@
   ],
   "case_sensitive": false,
   "log_removals": true,
-  "notes": "旧NG_keywords.txtからマージ済み。【.co.jp限定】パターン追加。【】なしの.co.jp限定パターンも追加"
+  "notes": "旧NG_keywords.txtからマージ済み。【.co.jp限定】パターン追加。【】なしの.co.jp限定パターンも追加。限定品/限定の パターン追加"
 }

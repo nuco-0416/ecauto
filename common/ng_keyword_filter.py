@@ -193,6 +193,45 @@ class NGKeywordFilter:
         text = '\n'.join(lines)
         return text
 
+    def _cleanup_residue(self, text):
+        """
+        NGキーワード削除後の残骸をクリーンアップ
+
+        対応するケース:
+        - 空の【】[]()を削除
+        - 【】[]内が1-2文字の意味のない残骸（「品」「の」など）の場合は削除
+        - 「■ の」のような助詞だけが残ったパターンを修正
+
+        Args:
+            text (str): 処理対象のテキスト
+
+        Returns:
+            str: クリーンアップされたテキスト
+        """
+        if not text:
+            return text
+
+        # 空の括弧を削除: 【】 [] () （）
+        text = re.sub(r'【\s*】', '', text)
+        text = re.sub(r'\[\s*\]', '', text)
+        text = re.sub(r'\(\s*\)', '', text)
+        text = re.sub(r'（\s*）', '', text)
+
+        # 括弧内が1-2文字の意味のない残骸を削除
+        # 「品」「の」「を」「が」「は」「に」「で」「と」「も」「や」などの助詞・接尾辞のみの場合
+        residue_pattern = r'[品の を が は に で と も や へ]'
+        text = re.sub(r'【\s*' + residue_pattern + r'{1,2}\s*】', '', text)
+        text = re.sub(r'\[\s*' + residue_pattern + r'{1,2}\s*\]', '', text)
+
+        # 「■ の」「■ を」のような、記号の後に助詞だけが残ったパターンを修正
+        text = re.sub(r'(■\s*)[のをがはにでともや]\s+', r'\1', text)
+
+        # 連続スペースを再度正規化
+        text = re.sub(r'[ \t]+', ' ', text)
+        text = text.strip()
+
+        return text
+
     def _remove_emojis(self, text):
         """
         テキストから絵文字を除去
@@ -244,6 +283,8 @@ class NGKeywordFilter:
         filtered = self._remove_emojis(filtered)
         # スペースを正規化
         filtered = self._normalize_spaces(filtered)
+        # 残骸をクリーンアップ
+        filtered = self._cleanup_residue(filtered)
         return filtered
 
     def filter_description(self, description):
@@ -262,6 +303,8 @@ class NGKeywordFilter:
         filtered = self._remove_emojis(filtered)
         # スペースを正規化
         filtered = self._normalize_spaces(filtered)
+        # 残骸をクリーンアップ
+        filtered = self._cleanup_residue(filtered)
         return filtered
 
     def clean_product_data(self, product_data, asin=None):
