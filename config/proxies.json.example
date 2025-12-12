@@ -1,0 +1,25 @@
+{
+  "proxies": [
+    {
+      "id": "proxy_01",
+      "url": "http://${PROXY_01_USER}:${PROXY_01_PASS}@proxy1.example.com:8080",
+      "region": "JP",
+      "type": "residential",
+      "description": "住宅プロキシ1（日本）"
+    },
+    {
+      "id": "proxy_02",
+      "url": "http://${PROXY_02_USER}:${PROXY_02_PASS}@proxy2.example.com:8080",
+      "region": "JP",
+      "type": "residential",
+      "description": "住宅プロキシ2（日本）"
+    }
+  ],
+  "_comment": {
+    "id": "一意のプロキシID（アカウント設定で参照）",
+    "url": "プロキシURL（${ENV_VAR}形式で環境変数参照可能）",
+    "region": "接続元リージョン（JP=日本）",
+    "type": "residential（住宅）/ datacenter（データセンター）",
+    "description": "プロキシの説明（任意）"
+  }
+}

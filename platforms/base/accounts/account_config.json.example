@@ -7,6 +7,7 @@
       "active": true,
       "daily_upload_limit": 1000,
       "rate_limit_per_hour": 50,
+      "proxy_id": "proxy_01",
       "credentials": {
         "client_id": "YOUR_CLIENT_ID_1",
         "client_secret": "YOUR_CLIENT_SECRET_1",
@@ -20,6 +21,7 @@
       "active": true,
       "daily_upload_limit": 1000,
       "rate_limit_per_hour": 50,
+      "proxy_id": "proxy_02",
       "credentials": {
         "client_id": "YOUR_CLIENT_ID_2",
         "client_secret": "YOUR_CLIENT_SECRET_2",
@@ -39,5 +41,8 @@
         "redirect_uri": "http://localhost:8000/callback"
       }
     }
-  ]
+  ],
+  "_comment": {
+    "proxy_id": "config/proxies.json で定義されたプロキシIDを指定（オプション、未設定時はプロキシなし）"
+  }
 }
