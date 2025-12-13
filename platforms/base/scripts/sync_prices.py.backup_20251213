@@ -515,13 +515,10 @@ class PriceSync:
         platform_item_id = listing['platform_item_id']
         current_price = listing['selling_price']
 
-        # ログプレフィックス（プラットフォーム/アカウントID）
-        log_prefix = f"[BASE/{base_client.account_id}]"
-
         self.stats['total_listings'] += 1
 
         if not amazon_info or not amazon_info.get('price_jpy'):
-            logger.info(f"  {log_prefix} [SKIP] {asin} - 価格情報が取得できません")
+            logger.info(f"  [SKIP] {asin} - 価格情報が取得できません")
             return
 
         amazon_price = amazon_info['price_jpy']
@@ -538,11 +535,11 @@ class PriceSync:
             return
 
         # 変更が必要
-        logger.info(f"  {log_prefix} [UPDATE] {asin} | {current_price:,}円 -> {new_price:,}円 (差額: {price_diff:,}円)")
-        logger.info(f"    {log_prefix} Amazon価格: {amazon_price:,}円")
+        logger.info(f"  [UPDATE] {asin} | {current_price:,}円 -> {new_price:,}円 (差額: {price_diff:,}円)")
+        logger.info(f"    Amazon価格: {amazon_price:,}円")
 
         if dry_run:
-            logger.info(f"    {log_prefix} → DRY RUN: 実際の更新はスキップ")
+            logger.info(f"    → DRY RUN: 実際の更新はスキップ")
             self.stats['price_updated'] += 1
             return
 
@@ -559,7 +556,7 @@ class PriceSync:
                 selling_price=new_price
             )
 
-            logger.info(f"    {log_prefix} → 更新成功")
+            logger.info(f"    → 更新成功")
             self.stats['price_updated'] += 1
 
         except requests.exceptions.HTTPError as e:
@@ -579,7 +576,7 @@ class PriceSync:
 
             # bad_item_idエラーの場合、自動delisted処理を実行
             if status_code == 400 and error_json and error_json.get('error') == 'bad_item_id':
-                logger.error(f"    {log_prefix} → BASE APIエラー: bad_item_id (商品が存在しません)")
+                logger.error(f"    → BASE APIエラー: bad_item_id (商品が存在しません)")
 
                 # 環境変数で無効化していない限り、自動delisted処理を実行（デフォルト: 有効）
                 auto_delist_enabled = os.getenv('AUTO_DELIST_INVALID_ITEMS', 'true').lower() == 'true'
@@ -587,17 +584,17 @@ class PriceSync:
                 if auto_delist_enabled:
                     self._handle_bad_item_id(listing, base_client, error_detail, dry_run)
                 else:
-                    logger.warning(f"    {log_prefix} → 自動delisted処理は無効化されています（AUTO_DELIST_INVALID_ITEMS=false）")
+                    logger.warning(f"    → 自動delisted処理は無効化されています（AUTO_DELIST_INVALID_ITEMS=false）")
                     self.stats['errors'] += 1
                     self.stats['errors_detail'].append(error_detail)
             else:
                 # その他のHTTPエラー
-                logger.error(f"    {log_prefix} → 更新エラー: HTTP {status_code} - {error_detail.get('error', str(e))}")
+                logger.error(f"    → 更新エラー: HTTP {status_code} - {error_detail.get('error', str(e))}")
                 self.stats['errors'] += 1
                 self.stats['errors_detail'].append(error_detail)
 
         except Exception as e:
-            logger.error(f"    {log_prefix} → 更新エラー: {e}")
+            logger.error(f"    → 更新エラー: {e}")
             self.stats['errors'] += 1
             self.stats['errors_detail'].append({
                 'asin': asin,
@@ -662,7 +659,7 @@ class PriceSync:
             self.stats['errors'] += 1
             self.stats['errors_detail'].append(error_detail)
 
-    def sync_all_accounts(self, dry_run: bool = False, parallel: bool = True, max_workers: int = 4, max_items: int = None, skip_cache_update: bool = False, stock_check_only: bool = False):
+    def sync_all_accounts(self, dry_run: bool = False, parallel: bool = True, max_workers: int = 4, max_items: int = None, skip_cache_update: bool = False):
         """
         全アカウントの価格を同期（並列処理対応）
 
@@ -672,18 +669,10 @@ class PriceSync:
             max_workers: 並列処理の最大ワーカー数（デフォルト: 4）
             max_items: テスト用：処理する最大商品数（省略時は全件）
             skip_cache_update: Trueの場合、SP-API処理をスキップして既存キャッシュを使用（テスト用）
-            stock_check_only: Trueの場合、価格同期をスキップ（在庫同期のみ実行）
         """
         logger.info("\n" + "=" * 70)
         logger.info("価格同期処理を開始")
         logger.info("=" * 70)
-
-        # 在庫チェックのみモードの場合、価格同期をスキップ
-        if stock_check_only:
-            logger.info("【在庫チェックモード】価格同期をスキップします")
-            logger.info("=" * 70)
-            return self.stats
-
         logger.info(f"掛け率: {self.markup_ratio}")
         logger.info(f"最小価格差: {self.MIN_PRICE_DIFF:,}円")
         logger.info(f"実行モード: {'DRY RUN（実際の更新なし）' if dry_run else '本番実行'}")

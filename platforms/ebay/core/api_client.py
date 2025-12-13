@@ -7,9 +7,13 @@ eBay Inventory API統合クライアント
 
 import requests
 import json
+import logging
 from typing import Dict, Optional, List, Any
 from pathlib import Path
 import sys
+
+# ロガー設定
+logger = logging.getLogger(__name__)
 
 # プロジェクトルートをパスに追加
 project_root = Path(__file__).resolve().parents[3]
@@ -137,11 +141,21 @@ class EbayAPIClient:
             if response.status_code == 200:
                 return response.json()
             elif response.status_code == 404:
+                logger.debug(f"[eBay/{self.account_id}] Inventory Item not found: sku={sku}")
                 return None
             else:
+                # エラー詳細をログに出力
+                error_detail = ""
+                try:
+                    error_json = response.json()
+                    error_detail = json.dumps(error_json, ensure_ascii=False)
+                except:
+                    error_detail = response.text[:500] if response.text else "No response body"
+                logger.error(f"[eBay/{self.account_id}] get_inventory_item failed: sku={sku}, status={response.status_code}, error={error_detail}")
                 return None
 
-        except requests.exceptions.RequestException:
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[eBay/{self.account_id}] get_inventory_item exception: sku={sku}, error={e}")
             return None
 
     def delete_inventory_item(self, sku: str) -> bool:
@@ -534,9 +548,9 @@ class EbayAPIClient:
                     print(f"  [INFO] Inventory Item数量が0のため、1に更新してから価格を更新します")
                     success = self.update_inventory_quantity(sku, 1)
                     if success:
-                        print(f"  [INFO] Inventory Item数量を1に更新しました")
+                        logger.info(f"[eBay/{self.account_id}] Inventory Item数量を1に更新しました: sku={sku}")
                     else:
-                        print(f"  [ERROR] Inventory Item数量の更新に失敗しました")
+                        logger.error(f"[eBay/{self.account_id}] Inventory Item数量の更新に失敗しました: sku={sku}")
                         return False
 
         # 価格のみ更新
@@ -550,8 +564,8 @@ class EbayAPIClient:
             offer.pop(field, None)
 
         # デバッグ: PUTリクエストボディを出力
-        print(f"  [DEBUG] PUT request body keys: {list(offer.keys())}")
-        print(f"  [DEBUG] pricingSummary={offer.get('pricingSummary')}")
+        logger.debug(f"[eBay/{self.account_id}] PUT request body keys: {list(offer.keys())}")
+        logger.debug(f"[eBay/{self.account_id}] pricingSummary={offer.get('pricingSummary')}")
 
         try:
             response = requests.put(url, headers=self._get_headers(), json=offer)
@@ -560,16 +574,17 @@ class EbayAPIClient:
                 return True
             else:
                 # エラー詳細をログ出力
-                print(f"  [ERROR] eBay API価格更新失敗: offer_id={offer_id}, status={response.status_code}")
+                error_detail = ""
                 try:
                     error_data = response.json()
-                    print(f"  [ERROR] レスポンス: {error_data}")
+                    error_detail = json.dumps(error_data, ensure_ascii=False)
                 except:
-                    print(f"  [ERROR] レスポンステキスト: {response.text}")
+                    error_detail = response.text[:500] if response.text else "No response body"
+                logger.error(f"[eBay/{self.account_id}] update_offer_price failed: offer_id={offer_id}, status={response.status_code}, error={error_detail}")
                 return False
 
         except requests.exceptions.RequestException as e:
-            print(f"  [ERROR] リクエスト例外: offer_id={offer_id}, error={e}")
+            logger.error(f"[eBay/{self.account_id}] update_offer_price exception: offer_id={offer_id}, error={e}")
             return False
 
     def update_inventory_quantity(self, sku: str, quantity: int) -> bool:
@@ -586,13 +601,20 @@ class EbayAPIClient:
         # 既存Inventory Item取得
         item = self.get_inventory_item(sku)
         if not item:
+            logger.error(f"[eBay/{self.account_id}] update_inventory_quantity failed: sku={sku} - Inventory Item not found")
             return False
 
         # 在庫数のみ更新
         item['availability']['shipToLocationAvailability']['quantity'] = quantity
 
         result = self.create_or_update_inventory_item(sku, item)
-        return result.get('success', False)
+        if not result.get('success', False):
+            # エラー詳細をログに出力
+            error_info = result.get('error', 'Unknown error')
+            status_code = result.get('status_code', 'N/A')
+            logger.error(f"[eBay/{self.account_id}] update_inventory_quantity failed: sku={sku}, quantity={quantity}, status={status_code}, error={error_info}")
+            return False
+        return True
 
     # =========================================================================
     # Location 操作
