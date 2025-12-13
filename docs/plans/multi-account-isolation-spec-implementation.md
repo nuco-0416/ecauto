@@ -2,8 +2,8 @@
 
 > **仕様書**: [multi-account-isolation-spec.md](./multi-account-isolation-spec.md)
 > **レビュー版**: [multi-account-isolation-spec-reviewed.md](./multi-account-isolation-spec-reviewed.md)
-> **実装日**: 2024-12-11
-> **ステータス**: Phase 1-3 完了（基盤実装）
+> **実装日**: 2024-12-11 〜 2024-12-13
+> **ステータス**: Phase 1-3.5 完了（基盤実装 + マルチオーナー対応）
 
 ---
 
@@ -18,6 +18,9 @@
 | Task 5 | Yahoo セッション管理 | ✅ 完了 |
 | Task 6 | Yahoo ログイン・検証スクリプト | ✅ 完了 |
 | Task 7 | Docker構成 | ✅ 完了 |
+| Task 8 | 直接接続（プロキシなし）サポート | ✅ 完了 |
+| Task 9 | BASE マルチオーナー構造 | ✅ 完了 |
+| Task 10 | .env プロキシ設定・タイポ修正 | ✅ 完了 |
 
 ---
 
@@ -31,6 +34,7 @@
 | `config/proxies.json.example` | 新規 | プロキシ設定テンプレート |
 | `common/proxy/__init__.py` | 新規 | モジュール初期化 |
 | `common/proxy/proxy_manager.py` | 新規 | プロキシ管理クラス |
+| `.env` | 更新 | プロキシ認証情報追加（PROXY_02_*） |
 | `.env.example` | 更新 | プロキシ・Yahoo認証情報追加 |
 | `.gitignore` | 更新 | Yahoo関連・プロキシ設定除外追加 |
 
@@ -247,10 +251,16 @@ cd deploy/docker
   "proxies": [
     {
       "id": "proxy_01",
-      "url": "http://${PROXY_01_USER}:${PROXY_01_PASS}@proxy1.example.com:8080",
+      "url": null,
+      "type": "direct",
+      "description": "プロキシなし（素の接続）"
+    },
+    {
+      "id": "proxy_02",
+      "url": "http://${PROXY_02_USER}:${PROXY_02_PASS}@${PROXY_02_HOST}:${PROXY_02_PORT}",
       "region": "JP",
       "type": "residential",
-      "description": "住宅プロキシ1（日本）"
+      "description": "Proxy-Cheap Static ISP #1704672"
     }
   ]
 }
@@ -260,12 +270,34 @@ cd deploy/docker
 
 ```json
 {
+  "owners": [
+    {
+      "id": "owner_01",
+      "name": "モリノクマ合同会社",
+      "proxy_id": "proxy_01",
+      "description": "メイン法人（プロキシなし直接接続）"
+    }
+  ],
   "accounts": [
     {
       "id": "base_account_1",
-      "name": "BASE本店",
+      "owner_id": "owner_01",
+      "name": "在庫BAZAAR",
+      "active": false,
+      "credentials": { ... }
+    },
+    {
+      "id": "base_account_2",
+      "owner_id": "owner_01",
+      "name": "バイヤー倉庫【送料無料】",
       "active": true,
-      "proxy_id": "proxy_01",
+      "credentials": { ... }
+    },
+    {
+      "id": "base_account_3",
+      "owner_id": "owner_01",
+      "name": "イイ値！SHOP",
+      "active": true,
       "credentials": { ... }
     }
   ]
@@ -292,9 +324,156 @@ cd deploy/docker
 
 ---
 
-## 5. 残作業・今後の実装
+## 5. 追加実装: 直接接続サポート
 
-### 5.1 Phase 4: Yahoo自動化ロジック（未実装）
+### 5.1 変更内容（2024-12-13）
+
+**目的**: `proxy_01` をプロキシなし（素の接続）、`proxy_02` 以降を有料プロキシとして使用可能にする。
+
+**変更ファイル**:
+
+| ファイル | 変更内容 |
+|---------|----------|
+| `config/proxies.json` | `proxy_01` に `type: "direct"` 追加 |
+| `common/proxy/proxy_manager.py` | 直接接続判定メソッド追加 |
+
+**ProxyManager 変更点**:
+
+1. `_is_direct_connection()` メソッド追加
+   - `type: "direct"` または `url: null` の場合に直接接続と判定
+
+2. `get_proxy()` / `get_proxy_for_playwright()` 修正
+   - 直接接続の場合は `None` を返す（プロキシなしで動作）
+
+**設定例**:
+```json
+{
+  "proxies": [
+    {
+      "id": "proxy_01",
+      "url": null,
+      "type": "direct",
+      "description": "プロキシなし（素の接続）"
+    },
+    {
+      "id": "proxy_02",
+      "url": "http://${PROXY_02_USER}:${PROXY_02_PASS}@${PROXY_02_HOST}:${PROXY_02_PORT}",
+      "region": "JP",
+      "type": "residential",
+      "description": "Proxy-Cheap Static ISP"
+    }
+  ]
+}
+```
+
+---
+
+## 6. BASE マルチオーナー構造（Phase 3.5）✅ 完了
+
+### 6.1 概要
+
+BASEでは1つの法人（オーナー）が最大100アカウントを持てる。プロキシ分離の単位は「アカウント」ではなく「オーナー」レベルで行う必要がある。
+
+### 6.2 実装ファイル
+
+| ファイル | 状態 | 説明 |
+|---------|------|------|
+| `platforms/base/accounts/account_config.json` | ✅ 更新 | `owners`配列追加、アカウントに`owner_id`追加 |
+| `platforms/base/accounts/account_config.json.example` | ✅ 更新 | オーナースキーマのテンプレート |
+| `platforms/base/accounts/manager.py` | ✅ 更新 | オーナー関連メソッド追加 |
+| `platforms/base/core/api_client.py` | ✅ 更新 | オーナー経由でプロキシ解決 |
+| `platforms/base/scripts/verify_owner_config.py` | ✅ 新規 | 設定検証スクリプト |
+
+### 6.3 設定スキーマ
+
+```json
+{
+  "owners": [
+    {
+      "id": "owner_01",
+      "name": "法人A",
+      "proxy_id": "proxy_01",
+      "description": "モリノクマ合同会社"
+    },
+    {
+      "id": "owner_02",
+      "name": "法人B",
+      "proxy_id": "proxy_02",
+      "description": "別法人"
+    }
+  ],
+  "accounts": [
+    {
+      "id": "base_account_1",
+      "owner_id": "owner_01",
+      "name": "在庫BAZAAR",
+      ...
+    }
+  ]
+}
+```
+
+### 6.4 AccountManager 追加メソッド
+
+- `get_owner(owner_id)` - オーナー設定を取得
+- `get_owner_for_account(account_id)` - アカウントに紐づくオーナーを取得
+- `get_proxy_id_for_account(account_id)` - アカウント → オーナー → proxy_id を解決
+- `get_accounts_by_owner(owner_id)` - オーナーに属するアカウント一覧
+- `list_owners()` - 全オーナーIDのリスト取得
+- `get_owner_info(owner_id)` - オーナー詳細情報取得
+
+### 6.5 プロキシ解決の優先順位（BaseApiClient）
+
+1. コンストラクタの `proxy_id` パラメータ（明示的指定）
+2. `account_config.json` のアカウント直接指定 `proxy_id`（後方互換性）
+3. `account_config.json` のオーナー設定 `proxy_id`（マルチオーナー対応）
+4. 未設定の場合はプロキシなしで動作
+
+### 6.6 検証コマンド
+
+```bash
+# 設定検証
+venv/bin/python -m platforms.base.scripts.verify_owner_config
+
+# 詳細表示
+venv/bin/python -m platforms.base.scripts.verify_owner_config --verbose
+
+# AccountManager サマリー表示
+venv/bin/python -c "from platforms.base.accounts.manager import AccountManager; AccountManager().print_summary()"
+```
+
+---
+
+## 7. 環境変数設定（.env）
+
+### 7.1 プロキシ関連設定
+
+```bash
+# プロキシ2（proxy_02）の認証情報
+PROXY_02_USER=6tvze5cHDy1qHln
+PROXY_02_PASS=DANKot0QY38MEeQ
+PROXY_02_HOST=178.92.33.12
+PROXY_02_PORT=41245
+```
+
+### 7.2 修正履歴
+
+| 日付 | 内容 |
+|------|------|
+| 2024-12-13 | タイポ修正: `ROXY_02_USER` → `PROXY_02_USER` |
+
+### 7.3 検証結果
+
+```
+proxy_01 (direct) → None（プロキシなし）
+proxy_02 (residential) → http://***:***@178.92.33.12:41245
+```
+
+---
+
+## 8. 残作業・今後の実装
+
+### 8.1 Phase 4: Yahoo自動化ロジック（未実装）
 
 | 機能 | ファイル | ステータス |
 |------|---------|-----------|
@@ -303,14 +482,14 @@ cd deploy/docker
 | 価格更新 | `tasks/pricing.py` | 未作成 |
 | master.db連携 | - | 未実装 |
 
-### 5.2 Phase 5: 本番運用準備
+### 8.2 Phase 5: 本番運用準備
 
-- [ ] 実際のプロキシサービス契約・設定
+- [x] 実際のプロキシサービス契約・設定（proxy_02: Proxy-Cheap Static ISP 設定済み）
 - [ ] Yahoo各アカウントの初回ログイン実施
 - [ ] Docker本番環境構築（GCE等）
 - [ ] 監視・アラート設定
 
-### 5.3 将来的な拡張
+### 8.3 将来的な拡張
 
 - [ ] メルカリ対応（同様のDocker分離）
 - [ ] スケール時のdocker-compose動的生成
@@ -318,7 +497,7 @@ cd deploy/docker
 
 ---
 
-## 6. 分離要素チェックリスト
+## 9. 分離要素チェックリスト
 
 | 要素 | BASE API | Yahoo Auction | 実装状況 |
 |------|----------|---------------|----------|
@@ -332,7 +511,7 @@ cd deploy/docker
 
 ---
 
-## 7. 関連ドキュメント
+## 10. 関連ドキュメント
 
 - [元仕様書](./multi-account-isolation-spec.md)
 - [レビュー版仕様書](./multi-account-isolation-spec-reviewed.md)

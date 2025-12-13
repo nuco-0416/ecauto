@@ -103,6 +103,22 @@ class ProxyManager:
 
         return re.sub(pattern, replace, text)
 
+    def _is_direct_connection(self, proxy: Dict[str, Any]) -> bool:
+        """
+        直接接続（プロキシなし）かどうかを判定
+
+        Args:
+            proxy: プロキシ設定辞書
+
+        Returns:
+            bool: type="direct" または url=null の場合 True
+        """
+        if proxy.get('type') == 'direct':
+            return True
+        if proxy.get('url') is None:
+            return True
+        return False
+
     def get_proxy(self, proxy_id: str) -> Optional[Dict[str, str]]:
         """
         指定したIDのプロキシ設定を取得（requests用）
@@ -112,13 +128,19 @@ class ProxyManager:
 
         Returns:
             dict: requests用のproxies辞書 {'http': url, 'https': url}
-                  存在しない場合はNone
+            None: プロキシなし（direct）または存在しない場合
         """
         if proxy_id not in self.proxies:
             logger.warning(f"プロキシが見つかりません: {proxy_id}")
             return None
 
         proxy = self.proxies[proxy_id]
+
+        # type: "direct" または url: null の場合はプロキシなし
+        if self._is_direct_connection(proxy):
+            logger.debug(f"直接接続（プロキシなし）: {proxy_id}")
+            return None
+
         url = self._expand_env_vars(proxy['url'])
 
         return {
@@ -143,13 +165,19 @@ class ProxyManager:
                       'username': 'user',  # 認証が必要な場合
                       'password': 'pass'   # 認証が必要な場合
                   }
-                  存在しない場合はNone
+            None: プロキシなし（direct）または存在しない場合
         """
         if proxy_id not in self.proxies:
             logger.warning(f"プロキシが見つかりません: {proxy_id}")
             return None
 
         proxy = self.proxies[proxy_id]
+
+        # type: "direct" または url: null の場合はプロキシなし
+        if self._is_direct_connection(proxy):
+            logger.debug(f"直接接続（プロキシなし）: {proxy_id}")
+            return None
+
         url = self._expand_env_vars(proxy['url'])
 
         # URLをパース
@@ -175,12 +203,18 @@ class ProxyManager:
             proxy_id: プロキシID
 
         Returns:
-            str: プロキシURL、存在しない場合はNone
+            str: プロキシURL
+            None: プロキシなし（direct）または存在しない場合
         """
         if proxy_id not in self.proxies:
             return None
 
         proxy = self.proxies[proxy_id]
+
+        # type: "direct" または url: null の場合はプロキシなし
+        if self._is_direct_connection(proxy):
+            return None
+
         return self._expand_env_vars(proxy['url'])
 
     def verify_proxy(self, proxy_id: str, timeout: int = 10) -> bool:
@@ -290,7 +324,14 @@ class ProxyManager:
             proxy_type = proxy.get('type', 'N/A')
             description = proxy.get('description', '')
 
+            # direct接続かどうかを判定
+            is_direct = self._is_direct_connection(proxy)
+
             print(f"[{proxy_id}]")
+            if is_direct:
+                print(f"  接続方式: 直接接続（プロキシなし）")
+            else:
+                print(f"  接続方式: プロキシ経由")
             print(f"  リージョン: {region}")
             print(f"  タイプ: {proxy_type}")
             if description:

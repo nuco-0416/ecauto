@@ -1,7 +1,16 @@
 {
+  "owners": [
+    {
+      "id": "owner_01",
+      "name": "モリノクマ合同会社",
+      "proxy_id": "proxy_01",
+      "description": "メイン法人（プロキシなし直接接続）"
+    }
+  ],
   "accounts": [
     {
       "id": "base_account_1",
+      "owner_id": "owner_01",
       "name": "在庫BAZAAR",
       "description": "byode.otoku@molinokuma.co.jp",
       "active": false,
@@ -15,6 +24,7 @@
     },
     {
       "id": "base_account_2",
+      "owner_id": "owner_01",
       "name": "バイヤー倉庫【送料無料】",
       "description": "base.shop.monty@honeybeeeee.com",
       "active": true,
@@ -28,6 +38,7 @@
     },
     {
       "id": "base_account_3",
+      "owner_id": "owner_01",
       "name": "イイ値！SHOP",
       "description": "アカウント3",
       "active": true,

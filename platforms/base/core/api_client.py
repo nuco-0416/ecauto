@@ -28,9 +28,10 @@ class BaseAPIClient:
     BASE APIクライアントクラス（自動トークン更新 + プロキシ対応）
 
     プロキシ設定は以下の優先順位で適用されます：
-    1. コンストラクタの proxy_id パラメータ
-    2. account_config.json の proxy_id フィールド
-    3. 未設定の場合はプロキシなしで動作（後方互換性）
+    1. コンストラクタの proxy_id パラメータ（明示的指定）
+    2. account_config.json のアカウント直接指定 proxy_id（後方互換性）
+    3. account_config.json のオーナー設定 proxy_id（マルチオーナー対応）
+    4. 未設定の場合はプロキシなしで動作
     """
 
     BASE_URL = "https://api.thebase.in/1"
@@ -70,11 +71,10 @@ class BaseAPIClient:
             else:
                 raise ValueError(f"アカウント {account_id} の有効なトークンを取得できませんでした")
 
-            # アカウント設定からproxy_idを取得（明示的に指定されていない場合）
+            # プロキシIDを取得（オーナー経由で解決、明示的に指定されていない場合）
+            # 解決順序: 1. コンストラクタ指定 → 2. アカウント直接指定 → 3. オーナー設定
             if not proxy_id:
-                account = account_manager.get_account(account_id)
-                if account and account.get('proxy_id'):
-                    self._proxy_id = account['proxy_id']
+                self._proxy_id = account_manager.get_proxy_id_for_account(account_id)
 
         # プロキシ設定を適用
         if self._proxy_id:
@@ -180,6 +180,7 @@ class BaseAPIClient:
 
         Raises:
             requests.exceptions.HTTPError: API呼び出しエラー
+            RateLimitError: APIレート制限に達した場合
         """
         # トークン自動更新チェック
         self._refresh_token_if_needed()
@@ -187,16 +188,40 @@ class BaseAPIClient:
         url = f"{self.BASE_URL}/items/add"
         response = self._request('POST', url, data=item_data)
 
-        # エラー時に詳細なメッセージを取得
+        # エラー時に詳細なメッセージを取得してログ出力
         if not response.ok:
             error_detail = f"Status: {response.status_code}"
+            error_type = None
+            error_description = None
+
             try:
                 error_json = response.json()
+                error_type = error_json.get('error')
+                error_description = error_json.get('error_description')
                 error_detail += f", Response: {error_json}"
             except:
                 error_detail += f", Text: {response.text[:200]}"
 
-            response.raise_for_status()  # これで詳細が上に伝わる
+            # レート制限エラーの場合は特別に警告ログを出力
+            if error_type == 'hour_api_limit':
+                logger.warning(
+                    f"[RATE_LIMIT] APIレート制限に到達しました: {error_description}"
+                )
+                logger.warning(
+                    f"[RATE_LIMIT] Account: {self.account_id}, "
+                    f"1時間後に自動リセットされます"
+                )
+
+            # 全てのAPIエラーをログに記録
+            logger.error(
+                f"商品登録エラー: {error_detail}, "
+                f"Account: {self.account_id}"
+            )
+
+            # HTTPError例外を投げる（エラー詳細を含める）
+            from requests.exceptions import HTTPError
+            error_msg = f"{error_type}: {error_description}" if error_type else error_detail
+            raise HTTPError(error_msg, response=response)
 
         return response.json()
 
@@ -227,7 +252,38 @@ class BaseAPIClient:
         data.update(updates)
 
         response = self._request('POST', url, data=data)
-        response.raise_for_status()
+
+        # エラー時に詳細をログ出力
+        if not response.ok:
+            error_detail = f"Status: {response.status_code}"
+            error_type = None
+            error_description = None
+
+            try:
+                error_json = response.json()
+                error_type = error_json.get('error')
+                error_description = error_json.get('error_description')
+                error_detail += f", Response: {error_json}"
+            except:
+                error_detail += f", Text: {response.text[:200]}"
+
+            # レート制限エラーの場合は特別に警告ログを出力
+            if error_type == 'hour_api_limit':
+                logger.warning(
+                    f"[RATE_LIMIT] 商品更新でAPIレート制限に到達: {error_description}"
+                )
+                logger.warning(
+                    f"[RATE_LIMIT] Account: {self.account_id}, Item: {item_id}, "
+                    f"1時間後に自動リセットされます"
+                )
+
+            logger.error(
+                f"商品更新エラー (item_id={item_id}): {error_detail}"
+            )
+
+            from requests.exceptions import HTTPError
+            error_msg = f"{error_type}: {error_description}" if error_type else error_detail
+            raise HTTPError(error_msg, response=response)
 
         return response.json()
 
@@ -272,10 +328,10 @@ class BaseAPIClient:
         # トークン自動更新チェック
         self._refresh_token_if_needed()
 
-        url = f"{self.BASE_URL}/items/detail"
+        # 公式API仕様: GET /1/items/detail/:item_id
+        url = f"{self.BASE_URL}/items/detail/{item_id}"
 
-        params = {'item_id': item_id}
-        response = self._request('GET', url, params=params)
+        response = self._request('GET', url)
         response.raise_for_status()
 
         return response.json()
@@ -342,7 +398,38 @@ class BaseAPIClient:
         }
 
         response = self._request('POST', url, data=data)
-        response.raise_for_status()
+
+        # エラー時に詳細をログ出力
+        if not response.ok:
+            error_detail = f"Status: {response.status_code}"
+            error_type = None
+            error_description = None
+
+            try:
+                error_json = response.json()
+                error_type = error_json.get('error')
+                error_description = error_json.get('error_description')
+                error_detail += f", Response: {error_json}"
+            except:
+                error_detail += f", Text: {response.text[:200]}"
+
+            # レート制限エラーの場合は特別に警告ログを出力
+            if error_type == 'hour_api_limit':
+                logger.warning(
+                    f"[RATE_LIMIT] 画像追加でAPIレート制限に到達: {error_description}"
+                )
+                logger.warning(
+                    f"[RATE_LIMIT] Account: {self.account_id}, Item: {item_id}, "
+                    f"1時間後に自動リセットされます"
+                )
+
+            logger.error(
+                f"画像追加エラー (item_id={item_id}, image_no={image_no}): {error_detail}"
+            )
+
+            from requests.exceptions import HTTPError
+            error_msg = f"{error_type}: {error_description}" if error_type else error_detail
+            raise HTTPError(error_msg, response=response)
 
         return response.json()
 

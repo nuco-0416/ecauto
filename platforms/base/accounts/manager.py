@@ -16,7 +16,10 @@ from core.auth import BaseOAuthClient
 
 class AccountManager:
     """
-    BASE複数アカウント管理クラス
+    BASE複数アカウント管理クラス（マルチオーナー対応）
+
+    オーナー（法人）単位でプロキシを分離し、同一オーナーに属する
+    複数アカウントは同じプロキシを使用する。
     """
 
     def __init__(self, config_path: str = None):
@@ -34,22 +37,37 @@ class AccountManager:
         self.tokens_dir.mkdir(parents=True, exist_ok=True)
 
         # 設定をロード
-        self.accounts = self._load_config()
+        self.accounts, self.owners = self._load_config()
 
-    def _load_config(self) -> List[Dict[str, Any]]:
-        """アカウント設定をロード"""
+    def _load_config(self) -> tuple:
+        """
+        アカウント設定とオーナー設定をロード
+
+        Returns:
+            tuple: (accounts_list, owners_dict)
+                - accounts_list: アカウント設定のリスト
+                - owners_dict: オーナーIDをキーとしたオーナー設定の辞書
+        """
         if not self.config_path.exists():
             print(f"警告: アカウント設定ファイルが見つかりません: {self.config_path}")
             print("account_config.json.example を参考に作成してください")
-            return []
+            return [], {}
 
         try:
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
-                return config.get('accounts', [])
+
+            accounts = config.get('accounts', [])
+            # オーナーをIDをキーとした辞書に変換
+            owners = {o['id']: o for o in config.get('owners', [])}
+
+            return accounts, owners
+        except json.JSONDecodeError as e:
+            print(f"エラー: アカウント設定の解析に失敗しました: {e}")
+            return [], {}
         except Exception as e:
             print(f"エラー: アカウント設定の読み込みに失敗しました: {e}")
-            return []
+            return [], {}
 
     def get_account(self, account_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -74,6 +92,122 @@ class AccountManager:
             list: アクティブなアカウントのリスト
         """
         return [acc for acc in self.accounts if acc.get('active', False)]
+
+    # ========================================
+    # オーナー関連メソッド
+    # ========================================
+
+    def get_owner(self, owner_id: str) -> Optional[Dict[str, Any]]:
+        """
+        オーナーIDで設定を取得
+
+        Args:
+            owner_id: オーナーID（例: 'owner_01'）
+
+        Returns:
+            dict or None: オーナー設定
+        """
+        return self.owners.get(owner_id)
+
+    def get_owner_for_account(self, account_id: str) -> Optional[Dict[str, Any]]:
+        """
+        アカウントに紐づくオーナー設定を取得
+
+        Args:
+            account_id: アカウントID
+
+        Returns:
+            dict or None: オーナー設定
+        """
+        account = self.get_account(account_id)
+        if not account:
+            return None
+
+        owner_id = account.get('owner_id')
+        if not owner_id:
+            return None
+
+        return self.get_owner(owner_id)
+
+    def get_proxy_id_for_account(self, account_id: str) -> Optional[str]:
+        """
+        アカウントのプロキシIDを取得（オーナー経由で解決）
+
+        解決順序:
+        1. アカウントに直接指定された proxy_id（後方互換性のため）
+        2. オーナーの proxy_id
+        3. None（プロキシなし）
+
+        Args:
+            account_id: アカウントID
+
+        Returns:
+            str or None: プロキシID
+        """
+        account = self.get_account(account_id)
+        if not account:
+            return None
+
+        # 1. アカウント直接指定（後方互換性）
+        if account.get('proxy_id'):
+            return account['proxy_id']
+
+        # 2. オーナー経由
+        owner = self.get_owner_for_account(account_id)
+        if owner and owner.get('proxy_id'):
+            return owner['proxy_id']
+
+        # 3. プロキシなし
+        return None
+
+    def get_accounts_by_owner(self, owner_id: str) -> List[Dict[str, Any]]:
+        """
+        指定オーナーに属するアカウント一覧を取得
+
+        Args:
+            owner_id: オーナーID
+
+        Returns:
+            list: 該当オーナーに属するアカウントのリスト
+        """
+        return [acc for acc in self.accounts if acc.get('owner_id') == owner_id]
+
+    def list_owners(self) -> List[str]:
+        """
+        全オーナーIDのリストを取得
+
+        Returns:
+            list: オーナーIDのリスト
+        """
+        return list(self.owners.keys())
+
+    def get_owner_info(self, owner_id: str) -> Optional[Dict[str, Any]]:
+        """
+        オーナーの詳細情報を取得
+
+        Args:
+            owner_id: オーナーID
+
+        Returns:
+            dict: オーナー情報（id, name, proxy_id, description, account_count）
+        """
+        owner = self.get_owner(owner_id)
+        if not owner:
+            return None
+
+        accounts = self.get_accounts_by_owner(owner_id)
+        return {
+            'id': owner.get('id'),
+            'name': owner.get('name'),
+            'proxy_id': owner.get('proxy_id'),
+            'description': owner.get('description', ''),
+            'account_count': len(accounts),
+            'accounts': [acc['id'] for acc in accounts]
+        }
+
+    # ========================================
+    # トークン関連メソッド
+    # ========================================
 
     def get_token(self, account_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -275,13 +409,26 @@ class AccountManager:
         return results
 
     def print_summary(self):
-        """アカウント一覧のサマリーを表示"""
+        """アカウント一覧のサマリーを表示（オーナー情報含む）"""
         print("\n" + "=" * 60)
-        print("BASE アカウント一覧")
+        print("BASE アカウント一覧（マルチオーナー対応）")
         print("=" * 60)
 
+        # オーナー情報を表示
+        if self.owners:
+            print(f"\n【オーナー（法人）一覧】 {len(self.owners)}件")
+            print("-" * 40)
+            for owner_id, owner in self.owners.items():
+                accounts = self.get_accounts_by_owner(owner_id)
+                print(f"  [{owner_id}] {owner.get('name', '')}")
+                print(f"    プロキシ: {owner.get('proxy_id', 'なし')}")
+                print(f"    アカウント数: {len(accounts)}")
+            print()
+
+        # アカウント情報を表示
         active_accounts = self.get_active_accounts()
-        print(f"アクティブ: {len(active_accounts)}件 / 全体: {len(self.accounts)}件\n")
+        print(f"【アカウント一覧】 アクティブ: {len(active_accounts)}件 / 全体: {len(self.accounts)}件")
+        print("-" * 40)
 
         for account in self.accounts:
             account_id = account['id']
@@ -292,6 +439,17 @@ class AccountManager:
             print(f"{active} {has_token} {account_id}")
             print(f"  名前: {name}")
             print(f"  説明: {account.get('description', '')}")
+
+            # オーナー情報を表示
+            owner_id = account.get('owner_id')
+            if owner_id:
+                owner = self.get_owner(owner_id)
+                owner_name = owner.get('name', '') if owner else '不明'
+                print(f"  オーナー: {owner_id} ({owner_name})")
+
+            # プロキシ情報を表示
+            proxy_id = self.get_proxy_id_for_account(account_id)
+            print(f"  プロキシ: {proxy_id or 'なし'}")
 
             # トークン情報を表示
             token = self.get_token(account_id)

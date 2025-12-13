@@ -19,7 +19,7 @@ if sys.platform == 'win32':
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 import time
 
@@ -143,6 +143,8 @@ class UploadSchedulerAccountDaemon(DaemonBase):
             success_count = 0
             failed_count = 0
             processed_count = 0
+            rate_limit_hit = False  # レート制限フラグ
+            rate_limit_detected_at = None  # レート制限検出時刻
 
             # 実行可能なアイテムを取得（アカウントでフィルタ）
             items = self.queue_manager.get_scheduled_items_due(
@@ -152,6 +154,14 @@ class UploadSchedulerAccountDaemon(DaemonBase):
             )
 
             for item in items:
+                # レート制限に達した場合、残りの処理を中断
+                if rate_limit_hit:
+                    self.logger.warning(
+                        f"[RATE_LIMIT] バッチ処理を中断: "
+                        f"残り{len(items) - processed_count}件は次回処理"
+                    )
+                    break
+
                 try:
                     result = self._upload_single_item(item)
                     processed_count += 1
@@ -160,16 +170,45 @@ class UploadSchedulerAccountDaemon(DaemonBase):
                         success_count += 1
                     else:
                         failed_count += 1
+                        # レート制限エラーを検知
+                        if result.get('error_type') == 'rate_limit':
+                            rate_limit_hit = True
+                            rate_limit_detected_at = datetime.now()
+                            reset_time = rate_limit_detected_at + timedelta(hours=1)
+                            self.logger.warning(
+                                f"[RATE_LIMIT] {rate_limit_detected_at.strftime('%Y-%m-%d %H:%M:%S')}JST "
+                                f"APIレート制限到達を検知"
+                            )
+                            self.logger.warning(
+                                f"[RATE_LIMIT] Account: {self.account_id}, "
+                                f"リセット予定: {reset_time.strftime('%Y-%m-%d %H:%M:%S')}JST"
+                            )
 
                 except Exception as e:
                     failed_count += 1
                     processed_count += 1
-                    self.logger.error(
-                        f"アイテムアップロード失敗: "
-                        f"ASIN={item.get('asin')}, "
-                        f"Error={e}",
-                        exc_info=True
-                    )
+                    error_str = str(e)
+
+                    # レート制限エラーを検知
+                    if 'hour_api_limit' in error_str:
+                        rate_limit_hit = True
+                        rate_limit_detected_at = datetime.now()
+                        reset_time = rate_limit_detected_at + timedelta(hours=1)
+                        self.logger.warning(
+                            f"[RATE_LIMIT] {rate_limit_detected_at.strftime('%Y-%m-%d %H:%M:%S')}JST "
+                            f"APIレート制限到達（例外）: ASIN={item.get('asin')}"
+                        )
+                        self.logger.warning(
+                            f"[RATE_LIMIT] Account: {self.account_id}, "
+                            f"リセット予定: {reset_time.strftime('%Y-%m-%d %H:%M:%S')}JST"
+                        )
+                    else:
+                        self.logger.error(
+                            f"アイテムアップロード失敗: "
+                            f"ASIN={item.get('asin')}, "
+                            f"Error={e}",
+                            exc_info=True
+                        )
 
             self.logger.info(
                 f"バッチ完了: 成功={success_count}, 失敗={failed_count}"
@@ -184,8 +223,24 @@ class UploadSchedulerAccountDaemon(DaemonBase):
                     remaining_count=pending_count - processed_count
                 )
 
-            # 失敗率が高い場合は警告通知
-            if failed_count > 0 and failed_count > success_count:
+            # レート制限到達時は特別な警告通知
+            if rate_limit_hit and rate_limit_detected_at:
+                reset_time = rate_limit_detected_at + timedelta(hours=1)
+                if self.notifier:
+                    self.notifier.notify(
+                        event_type='task_failure',
+                        title=f"[RATE_LIMIT] {self.platform.upper()} / {self.account_id} APIレート制限到達",
+                        message=(
+                            f"BASE APIの1時間あたり呼び出し上限（5000回）に達しました。\n\n"
+                            f"検出時刻: {rate_limit_detected_at.strftime('%Y-%m-%d %H:%M:%S')}JST\n"
+                            f"リセット予定: {reset_time.strftime('%Y-%m-%d %H:%M:%S')}JST\n\n"
+                            f"処理済み: {processed_count}件（成功: {success_count}, 失敗: {failed_count}）\n"
+                            f"残り: {pending_count - processed_count}件"
+                        ),
+                        level="WARNING"
+                    )
+            # 失敗率が高い場合は警告通知（レート制限以外）
+            elif failed_count > 0 and failed_count > success_count:
                 if self.notifier:
                     self.notifier.notify(
                         event_type='task_failure',
@@ -354,7 +409,13 @@ class UploadSchedulerAccountDaemon(DaemonBase):
             else:
                 # アップロード失敗
                 error_message = result.get('message', '不明なエラー')
-                self.logger.error(f"アップロード失敗: {error_message}")
+                error_type = result.get('error_type')
+
+                # レート制限エラーの場合は警告、それ以外はエラー
+                if error_type == 'rate_limit':
+                    self.logger.warning(f"アップロード失敗 (レート制限): {error_message}")
+                else:
+                    self.logger.error(f"アップロード失敗: {error_message}")
 
                 self.queue_manager.update_queue_status(
                     queue_id=queue_id,
@@ -362,11 +423,20 @@ class UploadSchedulerAccountDaemon(DaemonBase):
                     error_message=error_message
                 )
 
-                return {'status': 'failed', 'message': error_message}
+                return {
+                    'status': 'failed',
+                    'message': error_message,
+                    'error_type': error_type
+                }
 
         except Exception as e:
             error_message = str(e)
-            self.logger.error(f"例外発生: {error_message}", exc_info=True)
+            error_type = 'rate_limit' if 'hour_api_limit' in error_message else None
+
+            if error_type == 'rate_limit':
+                self.logger.warning(f"例外発生 (レート制限): {error_message}")
+            else:
+                self.logger.error(f"例外発生: {error_message}", exc_info=True)
 
             self.queue_manager.update_queue_status(
                 queue_id=queue_id,
@@ -374,7 +444,11 @@ class UploadSchedulerAccountDaemon(DaemonBase):
                 error_message=error_message
             )
 
-            return {'status': 'failed', 'message': error_message}
+            return {
+                'status': 'failed',
+                'message': error_message,
+                'error_type': error_type
+            }
 
 
 if __name__ == '__main__':
