@@ -84,7 +84,8 @@ class SyncInventoryDaemon(DaemonBase):
         platforms: List[str] = None,
         dry_run: bool = False,
         skip_cache_update: bool = False,
-        max_items: int = None
+        max_items: int = None,
+        stock_check_only: bool = False
     ):
         """
         Args:
@@ -93,6 +94,7 @@ class SyncInventoryDaemon(DaemonBase):
             dry_run: DRY RUNモード（デフォルト: False）
             skip_cache_update: キャッシュ更新をスキップ（既存キャッシュを使用、テスト用）
             max_items: テスト用：処理する最大商品数（省略時は全件）
+            stock_check_only: 在庫チェックのみ実行（SP-API同期・価格計算をスキップ）
         """
         # ロックファイルで単一インスタンスを保証
         lock_dir = Path(__file__).parent.parent / 'logs'
@@ -135,6 +137,7 @@ class SyncInventoryDaemon(DaemonBase):
         self.dry_run = dry_run
         self.skip_cache_update = skip_cache_update
         self.max_items = max_items
+        self.stock_check_only = stock_check_only
 
         # SP-APIクライアントの初期化（Phase 1用）
         try:
@@ -175,6 +178,8 @@ class SyncInventoryDaemon(DaemonBase):
         self.logger.info(f"DRY RUN: {dry_run}")
         if skip_cache_update:
             self.logger.info(f"キャッシュ更新: スキップ（既存キャッシュを使用）")
+        if stock_check_only:
+            self.logger.info(f"【在庫チェックモード】SP-API同期・価格計算をスキップ、在庫同期のみ実行")
         if max_items:
             self.logger.info(f"処理件数制限: {max_items}件（テストモード）")
 
@@ -195,6 +200,8 @@ class SyncInventoryDaemon(DaemonBase):
             self.logger.info(f"実行モード: {'DRY RUN' if self.dry_run else '本番実行'}")
             if self.skip_cache_update:
                 self.logger.info(f"キャッシュ更新: スキップ（既存キャッシュを使用、テスト用）")
+            if self.stock_check_only:
+                self.logger.info(f"【在庫チェックモード】SP-API同期・価格計算をスキップ、在庫同期のみ実行")
             if self.max_items:
                 self.logger.info(f"処理件数制限: {self.max_items}件（テストモード）")
             self.logger.info("=" * 70)
@@ -204,11 +211,14 @@ class SyncInventoryDaemon(DaemonBase):
                 self._log_platform_accounts(platform)
 
             # Phase 1: SP-API → Master DB（シリアル処理、1回のみ）
-            # skip_cache_updateが有効な場合はスキップ
-            if self.skip_cache_update:
+            # skip_cache_update または stock_check_only が有効な場合はスキップ
+            if self.skip_cache_update or self.stock_check_only:
                 self.logger.info("\n" + "=" * 70)
                 self.logger.info("【Phase 1】SP-API → Master DB同期: スキップ")
-                self.logger.info("既存のMaster DBデータを使用します")
+                if self.stock_check_only:
+                    self.logger.info("在庫チェックモードのため、SP-API同期をスキップします")
+                else:
+                    self.logger.info("既存のMaster DBデータを使用します")
                 self.logger.info("=" * 70)
             else:
                 # ISSUE_028対応: 全ASINの価格・在庫を一括更新
@@ -352,13 +362,15 @@ class SyncInventoryDaemon(DaemonBase):
                 stats = self.sync_instances[platform].run_full_sync(
                     platform=platform,
                     skip_cache_update=True,  # ISSUE_028: 常にTrue（Phase 1で更新済み）
-                    max_items=self.max_items
+                    max_items=self.max_items,
+                    stock_check_only=self.stock_check_only  # 在庫チェックモード対応
                 )
             elif platform == 'ebay':
-                # eBay: 価格同期のみ（既にキャッシュベース）
+                # eBay: 価格同期（stock_check_onlyの場合は在庫復活・再公開のみ）
                 price_stats = self.sync_instances[platform].sync_all_accounts(
                     dry_run=self.dry_run,
-                    max_items=self.max_items
+                    max_items=self.max_items,
+                    stock_check_only=self.stock_check_only  # 在庫チェックモード対応
                 )
                 duration = time.time() - start_time
                 stats = {
@@ -587,6 +599,11 @@ def main():
         default=None,
         help='テスト用：処理する最大商品数（省略時は全件）'
     )
+    parser.add_argument(
+        '--stock-check-only',
+        action='store_true',
+        help='在庫チェックのみ実行（SP-API同期・価格計算をスキップ）'
+    )
 
     args = parser.parse_args()
 
@@ -596,7 +613,8 @@ def main():
         platforms=args.platforms,
         dry_run=args.dry_run,
         skip_cache_update=args.skip_cache_update,
-        max_items=args.max_items
+        max_items=args.max_items,
+        stock_check_only=args.stock_check_only
     )
 
     daemon.run()

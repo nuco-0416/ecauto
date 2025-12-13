@@ -204,7 +204,7 @@ class EbayPriceSync:
             })
             return None
 
-    def sync_account_prices(self, account_id: str, dry_run: bool = False, max_items: int = None, stock_check_only: bool = False):
+    def sync_account_prices(self, account_id: str, dry_run: bool = False, max_items: int = None):
         """
         1アカウントの価格を同期
 
@@ -212,7 +212,6 @@ class EbayPriceSync:
             account_id: eBayアカウントID
             dry_run: Trueの場合、実際の更新は行わない
             max_items: テスト用：処理する最大商品数（省略時は全件）
-            stock_check_only: Trueの場合、在庫復活・再公開のみ実行（価格計算はスキップ）
         """
         account = self.account_manager.get_account(account_id)
         if not account:
@@ -268,15 +267,12 @@ class EbayPriceSync:
             self.stats['errors'] += 1
             return
 
-        # 各出品を処理
-        if stock_check_only:
-            logger.info("\n在庫チェック中（価格更新はスキップ）...")
-        else:
-            logger.info("\n価格を更新中...")
+        # 各出品の価格を更新
+        logger.info("\n価格を更新中...")
         for listing in listings:
-            self._sync_listing_price(listing, ebay_client, dry_run, stock_check_only)
+            self._sync_listing_price(listing, ebay_client, dry_run)
 
-    def _sync_listing_price(self, listing: dict, ebay_client: EbayAPIClient, dry_run: bool, stock_check_only: bool = False):
+    def _sync_listing_price(self, listing: dict, ebay_client: EbayAPIClient, dry_run: bool):
         """
         1つの出品の価格を同期
 
@@ -284,59 +280,49 @@ class EbayPriceSync:
             listing: 出品情報
             ebay_client: eBay APIクライアント
             dry_run: Trueの場合、実際の更新は行わない
-            stock_check_only: Trueの場合、在庫復活・再公開のみ実行（価格計算はスキップ）
         """
         asin = listing['asin']
         sku = listing['sku']
         current_price_usd = listing['selling_price']  # 現在の販売価格（USD）
-
-        # ログプレフィックス（プラットフォーム/アカウントID）
-        log_prefix = f"[eBay/{ebay_client.account_id}]"
 
         self.stats['total_listings'] += 1
 
         # eBayメタデータを取得（offer_id取得用）
         ebay_metadata = self.master_db.get_ebay_metadata(sku)
         if not ebay_metadata or not ebay_metadata.get('offer_id'):
-            logger.info(f"  {log_prefix} [SKIP] {asin} - eBayメタデータ（offer_id）が見つかりません")
+            logger.info(f"  [SKIP] {asin} - eBayメタデータ（offer_id）が見つかりません")
             self.stats['skipped_no_offer_id'] += 1
             return
 
         offer_id = ebay_metadata['offer_id']
 
-        # 在庫チェックのみモードの場合、Amazon価格取得・在庫切れチェックをスキップ
-        if stock_check_only:
-            # 直接eBay在庫復活・再公開チェックに進む
-            amazon_price_jpy = None  # 価格計算には使用しない
-            in_stock = True  # 在庫復活チェックを実行させる
-        else:
-            # キャッシュからAmazon価格を取得
-            amazon_info = self.get_amazon_price_from_cache(asin)
+        # キャッシュからAmazon価格を取得
+        amazon_info = self.get_amazon_price_from_cache(asin)
 
-            # キャッシュがない場合、SP-APIから自動取得
-            if not amazon_info or not amazon_info.get('price_jpy'):
-                if self.auto_fetch_sp_api:
-                    logger.info(f"  {log_prefix} [INFO] {asin} - キャッシュに価格情報がありません、SP-APIから取得します")
-                    amazon_info = self.fill_cache_for_asin(asin)
+        # キャッシュがない場合、SP-APIから自動取得
+        if not amazon_info or not amazon_info.get('price_jpy'):
+            if self.auto_fetch_sp_api:
+                logger.info(f"  [INFO] {asin} - キャッシュに価格情報がありません、SP-APIから取得します")
+                amazon_info = self.fill_cache_for_asin(asin)
 
-                    if not amazon_info or not amazon_info.get('price_jpy'):
-                        logger.info(f"  {log_prefix} [SKIP] {asin} - SP-APIからも価格情報を取得できませんでした")
-                        self.stats['skipped_no_amazon_info'] += 1
-                        return
-                else:
-                    logger.info(f"  {log_prefix} [SKIP] {asin} - キャッシュに価格情報がありません（SP-API自動取得: 無効）")
+                if not amazon_info or not amazon_info.get('price_jpy'):
+                    logger.info(f"  [SKIP] {asin} - SP-APIからも価格情報を取得できませんでした")
                     self.stats['skipped_no_amazon_info'] += 1
                     return
+            else:
+                logger.info(f"  [SKIP] {asin} - キャッシュに価格情報がありません（SP-API自動取得: 無効）")
+                self.stats['skipped_no_amazon_info'] += 1
+                return
 
-            amazon_price_jpy = amazon_info['price_jpy']
-            in_stock = amazon_info.get('in_stock', True)
+        amazon_price_jpy = amazon_info['price_jpy']
+        in_stock = amazon_info.get('in_stock', True)
 
-        # 在庫切れチェック（stock_check_only モードではスキップ）
-        if not stock_check_only and not in_stock:
-            logger.info(f"  {log_prefix} [OUT_OF_STOCK] {asin} - Amazon在庫切れ、数量を0に更新")
+        # 在庫切れチェック
+        if not in_stock:
+            logger.info(f"  [OUT_OF_STOCK] {asin} - Amazon在庫切れ、数量を0に更新")
 
             if dry_run:
-                logger.info(f"    {log_prefix} → DRY RUN: 実際の更新はスキップ")
+                logger.info(f"    → DRY RUN: 実際の更新はスキップ")
                 self.stats['out_of_stock_updated'] += 1
                 return
 
@@ -345,13 +331,13 @@ class EbayPriceSync:
                 success = ebay_client.update_inventory_quantity(sku, 0)
 
                 if success:
-                    logger.info(f"    {log_prefix} → 在庫数0に更新成功")
+                    logger.info(f"    → 在庫数0に更新成功")
                     self.stats['out_of_stock_updated'] += 1
                 else:
-                    logger.error(f"    {log_prefix} → 在庫数更新失敗")
+                    logger.error(f"    → 在庫数更新失敗")
                     self.stats['errors'] += 1
             except Exception as e:
-                logger.error(f"    {log_prefix} → 在庫数更新エラー: {e}")
+                logger.error(f"    → 在庫数更新エラー: {e}")
                 self.stats['errors'] += 1
                 self.stats['errors_detail'].append({
                     'asin': asin,
@@ -370,30 +356,21 @@ class EbayPriceSync:
                 ebay_quantity = ebay_item.get('availability', {}).get('shipToLocationAvailability', {}).get('quantity', 1)
 
                 if ebay_quantity == 0:
-                    logger.info(f"  {log_prefix} [STOCK_RESTORE] {asin} - Amazon在庫あり、eBay在庫0→1に復活")
+                    logger.info(f"  [STOCK_RESTORE] {asin} - Amazon在庫あり、eBay在庫0→1に復活")
 
                     if dry_run:
-                        logger.info(f"    {log_prefix} → DRY RUN: 実際の更新はスキップ")
+                        logger.info(f"    → DRY RUN: 実際の更新はスキップ")
                         self.stats['stock_restored'] += 1
                     else:
-                        # リトライ付き在庫復活処理
-                        max_retries = 3
-                        retry_delay = 2  # 秒
+                        # 在庫数を1に復活
+                        success = ebay_client.update_inventory_quantity(sku, 1)
 
-                        for attempt in range(1, max_retries + 1):
-                            success = ebay_client.update_inventory_quantity(sku, 1)
-
-                            if success:
-                                logger.info(f"    {log_prefix} → 在庫数1に復活成功")
-                                self.stats['stock_restored'] += 1
-                                break
-                            else:
-                                if attempt < max_retries:
-                                    logger.warning(f"    {log_prefix} → 在庫数復活失敗 (試行 {attempt}/{max_retries})、{retry_delay}秒後にリトライ")
-                                    time.sleep(retry_delay)
-                                else:
-                                    logger.error(f"    {log_prefix} → 在庫数復活失敗 (全{max_retries}回試行)")
-                                    self.stats['errors'] += 1
+                        if success:
+                            logger.info(f"    → 在庫数1に復活成功")
+                            self.stats['stock_restored'] += 1
+                        else:
+                            logger.error(f"    → 在庫数復活失敗")
+                            self.stats['errors'] += 1
 
             # Offerの状態を確認（UNPUBLISHED なら再公開）
             offers = ebay_client.get_offers_by_sku(sku)
@@ -402,43 +379,25 @@ class EbayPriceSync:
                 offer_status = offer.get('status', '')
 
                 if offer_status == 'UNPUBLISHED':
-                    logger.info(f"  {log_prefix} [RELIST] {asin} - Offer status=UNPUBLISHED、再公開します")
-                    offer_id_for_relist = offer.get('offerId')
+                    logger.info(f"  [RELIST] {asin} - Offer status=UNPUBLISHED、再公開します")
 
-                    if not offer_id_for_relist:
-                        logger.error(f"    {log_prefix} → offerIdが取得できません")
-                        self.stats['errors'] += 1
-                    elif dry_run:
-                        logger.info(f"    {log_prefix} → DRY RUN: 実際の再公開はスキップ")
+                    if dry_run:
+                        logger.info(f"    → DRY RUN: 実際の再公開はスキップ")
                         self.stats['relisted'] += 1
                     else:
-                        # リトライ付き再公開処理
-                        max_retries = 3
-                        retry_delay = 2  # 秒
+                        # Offer再公開（merchantLocationKeyがない場合は自動補完）
+                        listing_id = ebay_client.relist_offer(offer_id, sku)
 
-                        for attempt in range(1, max_retries + 1):
-                            listing_id = ebay_client.relist_offer(offer_id_for_relist, sku)
-
-                            if listing_id:
-                                logger.info(f"    {log_prefix} → 再公開成功! listingId={listing_id}")
-                                self.stats['relisted'] += 1
-                                break
-                            else:
-                                if attempt < max_retries:
-                                    logger.warning(f"    {log_prefix} → 再公開失敗 (試行 {attempt}/{max_retries})、{retry_delay}秒後にリトライ")
-                                    time.sleep(retry_delay)
-                                else:
-                                    logger.error(f"    {log_prefix} → 再公開失敗 (全{max_retries}回試行)")
-                                    self.stats['errors'] += 1
+                        if listing_id:
+                            logger.info(f"    → 再公開成功! listingId={listing_id}")
+                            self.stats['relisted'] += 1
+                        else:
+                            logger.error(f"    → 再公開失敗")
+                            self.stats['errors'] += 1
 
         except Exception as e:
             # 在庫復活処理のエラーは警告扱い（価格同期は継続）
-            logger.warning(f"  {log_prefix} [WARN] {asin} - 在庫復活/再公開チェックエラー（価格同期は継続）: {e}")
-
-        # 在庫チェックのみモードの場合、価格計算・更新はスキップ
-        if stock_check_only:
-            self.stats['no_update_needed'] += 1
-            return
+            logger.warning(f"  [WARN] {asin} - 在庫復活/再公開チェックエラー（価格同期は継続）: {e}")
 
         # 販売価格を計算（USD）
         new_price_usd = self.calculate_selling_price_usd(amazon_price_jpy)
@@ -452,11 +411,11 @@ class EbayPriceSync:
             return
 
         # 変更が必要
-        logger.info(f"  {log_prefix} [UPDATE] {asin} | ${current_price_usd:.2f} -> ${new_price_usd:.2f} (差額: ${price_diff_usd:.2f})")
-        logger.info(f"    {log_prefix} Amazon価格: {amazon_price_jpy:,}円")
+        logger.info(f"  [UPDATE] {asin} | ${current_price_usd:.2f} -> ${new_price_usd:.2f} (差額: ${price_diff_usd:.2f})")
+        logger.info(f"    Amazon価格: {amazon_price_jpy:,}円")
 
         if dry_run:
-            logger.info(f"    {log_prefix} → DRY RUN: 実際の更新はスキップ")
+            logger.info(f"    → DRY RUN: 実際の更新はスキップ")
             self.stats['price_updated'] += 1
             return
 
@@ -471,10 +430,10 @@ class EbayPriceSync:
                     selling_price=new_price_usd
                 )
 
-                logger.info(f"    {log_prefix} → 更新成功")
+                logger.info(f"    → 更新成功")
                 self.stats['price_updated'] += 1
             else:
-                logger.error(f"    {log_prefix} → 更新失敗")
+                logger.error(f"    → 更新失敗")
                 self.stats['errors'] += 1
                 self.stats['errors_detail'].append({
                     'asin': asin,
@@ -483,7 +442,7 @@ class EbayPriceSync:
                 })
 
         except Exception as e:
-            logger.error(f"    {log_prefix} → 更新エラー: {e}")
+            logger.error(f"    → 更新エラー: {e}")
             self.stats['errors'] += 1
             self.stats['errors_detail'].append({
                 'asin': asin,
@@ -491,14 +450,13 @@ class EbayPriceSync:
                 'error': str(e)
             })
 
-    def sync_all_accounts(self, dry_run: bool = False, max_items: int = None, stock_check_only: bool = False):
+    def sync_all_accounts(self, dry_run: bool = False, max_items: int = None):
         """
         全アカウントの価格を同期
 
         Args:
             dry_run: Trueの場合、実際の更新は行わない
             max_items: テスト用：処理する最大商品数（省略時は全件）
-            stock_check_only: Trueの場合、在庫復活・再公開のみ実行（価格計算はスキップ）
         """
         logger.info("\n" + "=" * 70)
         logger.info("eBay価格同期処理を開始")
@@ -523,7 +481,7 @@ class EbayPriceSync:
             account_id = account['id']
 
             try:
-                self.sync_account_prices(account_id, dry_run, max_items, stock_check_only)
+                self.sync_account_prices(account_id, dry_run, max_items)
             except Exception as e:
                 logger.error(f"エラー: アカウント {account_id} の処理中にエラー: {e}")
                 self.stats['errors'] += 1
@@ -612,11 +570,6 @@ def main():
         action='store_true',
         help='キャッシュがない場合にSP-APIから自動取得しない（デフォルト: 自動取得する）'
     )
-    parser.add_argument(
-        '--stock-check-only',
-        action='store_true',
-        help='在庫復活・再公開処理のみ実行（SP-API同期・価格計算はスキップ）'
-    )
 
     args = parser.parse_args()
 
@@ -626,24 +579,19 @@ def main():
         auto_fetch_sp_api=not args.no_auto_fetch_sp_api
     )
 
-    if args.stock_check_only:
-        logger.info("【在庫チェックモード】価格計算・更新はスキップし、在庫復活・再公開のみ実行します")
-
     if args.account:
         # 特定アカウントのみ
         sync.sync_account_prices(
             account_id=args.account,
             dry_run=args.dry_run,
-            max_items=args.max_items,
-            stock_check_only=args.stock_check_only
+            max_items=args.max_items
         )
         sync._print_summary()
     else:
         # 全アカウント
         stats = sync.sync_all_accounts(
             dry_run=args.dry_run,
-            max_items=args.max_items,
-            stock_check_only=args.stock_check_only
+            max_items=args.max_items
         )
 
     # 終了コード

@@ -2,15 +2,23 @@
 Windowsからファイルを移す場合: Windowsのエクスプローラーのアドレスバーに \\wsl$ と入力するとUbuntuのフォルダが見える
 
 # Ticket
+
+## master.dbへの追加処理
+- ASIN > master.products > master.listings > upload_queue のパイプライン処理でASIN抽出からproductsとlistingsに同時登録するスクリプトが散在しているため、出品パイプラインに混乱が生じている
+    - 既存商品の別ショップへの出品スクリプトが存在していない
+
 ## platforms/
 - アカウント匿名化強化
 - YahooAuction移植
 - Shopee追加
+- [x] BASEでの販売済で在庫切れになった商品の在庫復活
 
 ## finance_manager/
 - [DEBUG] 03_outputがプロジェクトルートに生成される
 - [DEV] コストデータの集約
-
+    - finance_manager/ 販売物と送料のETLスクリプト
+    - 販売したものの、注文一覧と発注したものの、Amazonの発注金額一覧をUTして利益計算をするスクリプト
+    
 ## scheduler/
 - カテゴリなしでローテーションする：事前に必須⇒プロキシなど匿名化ロジック実装
 

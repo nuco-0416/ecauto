@@ -173,18 +173,21 @@ class StockVisibilitySync:
         platform_item_id = listing['platform_item_id']
         current_visibility = listing['visibility']
 
+        # ログプレフィックス（プラットフォーム/アカウントID）
+        log_prefix = f"[BASE/{base_client.account_id}]"
+
         self.stats['total_products'] += 1
 
         # 商品情報を取得（マスタDBから）
         product = self.master_db.get_product(asin)
         if not product:
-            logger.info(f"  [SKIP] {asin} - 商品情報が見つかりません")
+            logger.info(f"  {log_prefix} [SKIP] {asin} - 商品情報が見つかりません")
             return
 
         # Amazon在庫状況をチェック（マスタDBから直接取得）
         amazon_in_stock = product.get('amazon_in_stock')
         if amazon_in_stock is None:
-            logger.debug(f"  [SKIP] {asin} - 在庫情報がありません")
+            logger.debug(f"  {log_prefix} [SKIP] {asin} - 在庫情報がありません")
             self.stats['no_stock_info'] += 1
             return
 
@@ -201,14 +204,14 @@ class StockVisibilitySync:
             # visibility変更不要だが、Amazon在庫ありの場合は在庫数チェックを行う
             # （販売済みでBASE在庫0のまま放置されている商品への対応）
             if amazon_in_stock and current_visibility == 'public':
-                self._restore_stock_if_needed(asin, listing_id, platform_item_id, base_client, dry_run)
+                self._restore_stock_if_needed(asin, listing_id, platform_item_id, base_client, dry_run, log_prefix)
             return
 
         # 変更が必要
-        logger.info(f"  [UPDATE] {asin} | {current_visibility} → {target_visibility}")
+        logger.info(f"  {log_prefix} [UPDATE] {asin} | {current_visibility} → {target_visibility}")
 
         if dry_run:
-            logger.info(f"    → DRY RUN: 実際の更新はスキップ")
+            logger.info(f"    {log_prefix} → DRY RUN: 実際の更新はスキップ")
             if target_visibility == 'hidden':
                 self.stats['updated_to_hidden'] += 1
             else:
@@ -230,7 +233,7 @@ class StockVisibilitySync:
                 visibility=target_visibility
             )
 
-            logger.info(f"    → 更新成功")
+            logger.info(f"    {log_prefix} → 更新成功")
 
             # BASE APIレート制限対策（実際にAPI呼び出しが行われた場合のみ）
             time.sleep(0.1)
@@ -241,7 +244,7 @@ class StockVisibilitySync:
                 self.stats['updated_to_public'] += 1
 
         except Exception as e:
-            logger.error(f"    → 更新エラー: {e}")
+            logger.error(f"    {log_prefix} → 更新エラー: {e}")
             self.stats['errors'] += 1
             self.stats['errors_detail'].append({
                 'asin': asin,
@@ -252,9 +255,9 @@ class StockVisibilitySync:
 
         # Amazon在庫ありの場合、BASE側の在庫数もチェックして復活させる
         if amazon_in_stock and target_visibility == 'public':
-            self._restore_stock_if_needed(asin, listing_id, platform_item_id, base_client, dry_run)
+            self._restore_stock_if_needed(asin, listing_id, platform_item_id, base_client, dry_run, log_prefix)
 
-    def _restore_stock_if_needed(self, asin: str, listing_id: int, platform_item_id: str, base_client, dry_run: bool):
+    def _restore_stock_if_needed(self, asin: str, listing_id: int, platform_item_id: str, base_client, dry_run: bool, log_prefix: str = ""):
         """
         BASE側の在庫数が0の場合、在庫を1に復活させる
 
@@ -264,12 +267,13 @@ class StockVisibilitySync:
             platform_item_id: BASE商品ID
             base_client: BASE APIクライアント
             dry_run: Trueの場合、実際の更新は行わない
+            log_prefix: ログプレフィックス（プラットフォーム/アカウントID）
         """
         try:
             # BASE側の現在の在庫数を取得
             item_detail = base_client.get_item(platform_item_id)
             if not item_detail:
-                logger.warning(f"    [STOCK] {asin} - 商品情報を取得できませんでした")
+                logger.warning(f"    {log_prefix} [STOCK] {asin} - 商品情報を取得できませんでした")
                 return
 
             # レスポンス形式: {'item': {...}}
@@ -277,10 +281,10 @@ class StockVisibilitySync:
             current_stock = item_info.get('stock', 0)
 
             if current_stock == 0:
-                logger.info(f"    [STOCK_RESTORE] {asin} - Amazon在庫あり、BASE在庫0→1に復活")
+                logger.info(f"    {log_prefix} [STOCK_RESTORE] {asin} - Amazon在庫あり、BASE在庫0→1に復活")
 
                 if dry_run:
-                    logger.info(f"      → DRY RUN: 実際の更新はスキップ")
+                    logger.info(f"      {log_prefix} → DRY RUN: 実際の更新はスキップ")
                     self.stats['stock_restored'] += 1
                     return
 
@@ -290,14 +294,14 @@ class StockVisibilitySync:
                     updates={'stock': 1}
                 )
 
-                logger.info(f"      → 在庫数1に復活成功")
+                logger.info(f"      {log_prefix} → 在庫数1に復活成功")
                 self.stats['stock_restored'] += 1
 
                 # BASE APIレート制限対策
                 time.sleep(0.1)
 
         except Exception as e:
-            logger.error(f"    [STOCK] {asin} - 在庫復活エラー: {e}")
+            logger.error(f"    {log_prefix} [STOCK] {asin} - 在庫復活エラー: {e}")
             self.stats['errors'] += 1
             self.stats['errors_detail'].append({
                 'asin': asin,

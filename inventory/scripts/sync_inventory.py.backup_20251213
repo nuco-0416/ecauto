@@ -68,7 +68,7 @@ class InventorySync:
             'total_errors': 0
         }
 
-    def run_full_sync(self, platform: str = 'base', skip_cache_update: bool = False, max_items: int = None, stock_check_only: bool = False) -> Dict[str, Any]:
+    def run_full_sync(self, platform: str = 'base', skip_cache_update: bool = False, max_items: int = None) -> Dict[str, Any]:
         """
         完全同期を実行（キャッシュ検証 → 価格同期 → 在庫同期）
 
@@ -76,7 +76,6 @@ class InventorySync:
             platform: プラットフォーム名
             skip_cache_update: Trueの場合、SP-API処理をスキップして既存キャッシュを使用（テスト用）
             max_items: テスト用：処理する最大商品数（省略時は全件）
-            stock_check_only: Trueの場合、価格同期をスキップし在庫同期のみ実行
 
         Returns:
             dict: 実行結果
@@ -88,31 +87,21 @@ class InventorySync:
         logger.info("=" * 70)
         logger.info(f"プラットフォーム: {platform}")
         logger.info(f"実行モード: {'DRY RUN（実際の更新なし）' if self.dry_run else '本番実行'}")
-        if stock_check_only:
-            logger.info(f"【在庫チェックモード】価格同期をスキップし、在庫同期のみ実行")
         logger.info(f"開始時刻: {self.stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 70)
 
         try:
-            # Step 1: 価格同期（stock_check_onlyの場合はスキップ）
-            if stock_check_only:
-                logger.info("")
-                logger.info("┌─────────────────────────────────────────────────────┐")
-                logger.info("│ Step 1: 価格同期 → スキップ（在庫チェックモード）    │")
-                logger.info("└─────────────────────────────────────────────────────┘")
-                logger.info("")
-                self.stats['price_sync'] = {}
-            else:
-                logger.info("")
-                logger.info("┌─────────────────────────────────────────────────────┐")
-                logger.info("│ Step 1: 価格同期                                     │")
-                logger.info("└─────────────────────────────────────────────────────┘")
-                logger.info("")
+            # Step 1: 価格同期
+            logger.info("")
+            logger.info("┌─────────────────────────────────────────────────────┐")
+            logger.info("│ Step 1: 価格同期                                     │")
+            logger.info("└─────────────────────────────────────────────────────┘")
+            logger.info("")
 
-                # ISSUE #006対応: SP-APIレート制限のため並列処理を無効化
-                # 並列処理により複数アカウントが同時にリクエストを送信し、レート制限を超える問題を回避
-                price_stats = self.price_sync.sync_all_accounts(dry_run=self.dry_run, parallel=False, skip_cache_update=skip_cache_update, max_items=max_items)
-                self.stats['price_sync'] = price_stats
+            # ISSUE #006対応: SP-APIレート制限のため並列処理を無効化
+            # 並列処理により複数アカウントが同時にリクエストを送信し、レート制限を超える問題を回避
+            price_stats = self.price_sync.sync_all_accounts(dry_run=self.dry_run, parallel=False, skip_cache_update=skip_cache_update, max_items=max_items)
+            self.stats['price_sync'] = price_stats
 
             # Step 2: 在庫同期（visibility更新）
             logger.info("")
@@ -311,17 +300,6 @@ def main():
         action='store_true',
         help='DRY RUNモード（実際の更新なし）'
     )
-    parser.add_argument(
-        '--max-items',
-        type=int,
-        default=None,
-        help='テスト用：処理する最大商品数（省略時は全件）'
-    )
-    parser.add_argument(
-        '--stock-check-only',
-        action='store_true',
-        help='在庫チェックのみ実行（SP-API同期・価格計算をスキップ）'
-    )
 
     args = parser.parse_args()
 
@@ -342,11 +320,7 @@ def main():
         elif args.stock_only:
             stats = sync.run_stock_only(platform=args.platform)
         else:
-            stats = sync.run_full_sync(
-                platform=args.platform,
-                max_items=args.max_items,
-                stock_check_only=args.stock_check_only
-            )
+            stats = sync.run_full_sync(platform=args.platform)
 
         # エラーがあれば終了コード1
         total_errors = (
