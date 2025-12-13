@@ -1,0 +1,60 @@
+# Yahoo!オークション自動化用Dockerイメージ
+#
+# ビルド:
+#   docker build -f deploy/docker/Dockerfile.yahoo -t ecauto-yahoo .
+#
+# 実行:
+#   docker run --rm -it ecauto-yahoo
+
+FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+
+# メタデータ
+LABEL maintainer="ecauto"
+LABEL description="Yahoo Auction automation container with Playwright"
+
+# タイムゾーン設定
+ENV TZ=Asia/Tokyo
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# ロケール設定
+ENV LANG=ja_JP.UTF-8
+ENV LANGUAGE=ja_JP:ja
+ENV LC_ALL=ja_JP.UTF-8
+
+# 日本語フォントインストール
+RUN apt-get update && apt-get install -y \
+    fonts-ipafont-gothic \
+    fonts-ipafont-mincho \
+    fonts-noto-cjk \
+    locales \
+    && locale-gen ja_JP.UTF-8 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 作業ディレクトリ
+WORKDIR /app
+
+# 依存関係のインストール（キャッシュ効率化のため先にコピー）
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Playwrightブラウザのインストール（Chromiumのみ）
+RUN playwright install chromium
+
+# アプリケーションコードをコピー
+COPY . .
+
+# プロファイルディレクトリ（ボリュームマウント用）
+VOLUME ["/app/platforms/yahoo_auction/accounts/profiles"]
+
+# 環境変数のデフォルト値
+ENV HEADLESS=true
+ENV ACCOUNT_ID=yahoo_01
+
+# ヘルスチェック用
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "print('healthy')" || exit 1
+
+# デフォルトのエントリーポイント
+# 実際の運用では docker-compose.yml で上書きする
+ENTRYPOINT ["python", "-m", "platforms.yahoo_auction.scripts.verify_session"]
+CMD ["--account-id", "yahoo_01"]

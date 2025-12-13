@@ -61,6 +61,14 @@ sourcing/data/chrome_profile/
 sourcing/data/screenshots/
 sourcing/sources/sellersprite/.env
 
+# Yahoo Auction
+platforms/yahoo_auction/accounts/profiles/*
+!platforms/yahoo_auction/accounts/profiles/.gitkeep
+platforms/yahoo_auction/accounts/account_config.json
+
+# プロキシ設定（認証情報含む）
+config/proxies.json
+
 # ログファイル
 *.log
 logs/

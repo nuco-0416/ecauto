@@ -1,0 +1,91 @@
+# Yahoo!オークション マルチアカウント Docker Compose 設定
+#
+# 使用方法:
+#   # 全コンテナ起動
+#   docker compose up -d
+#
+#   # 特定のアカウントのみ起動
+#   docker compose up yahoo_01 -d
+#
+#   # ログ確認
+#   docker compose logs -f yahoo_01
+#
+#   # 停止
+#   docker compose down
+
+version: '3.8'
+
+services:
+  # ========================================
+  # Yahoo アカウント 1
+  # ========================================
+  yahoo_01:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.yahoo
+    container_name: ecauto-yahoo-01
+    environment:
+      - ACCOUNT_ID=yahoo_01
+      # プロキシURL（.env で PROXY_01_URL を定義）
+      - PROXY_URL=${PROXY_01_URL:-}
+      # Yahoo! JAPAN ID（.env で YAHOO_01_ID を定義）
+      - YAHOO_JAPAN_ID=${YAHOO_01_ID:-}
+      # ヘッドレスモード
+      - HEADLESS=${HEADLESS:-true}
+      # タイムゾーン
+      - TZ=Asia/Tokyo
+    volumes:
+      # プロファイルディレクトリをマウント（セッション永続化）
+      - ../../platforms/yahoo_auction/accounts/profiles/yahoo_01:/app/platforms/yahoo_auction/accounts/profiles/yahoo_01
+      # 設定ファイル（読み取り専用）
+      - ../../config:/app/config:ro
+    # リソース制限
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    restart: unless-stopped
+    # ネットワーク（デフォルトbridge）
+    networks:
+      - default
+
+  # ========================================
+  # Yahoo アカウント 2
+  # ========================================
+  yahoo_02:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.yahoo
+    container_name: ecauto-yahoo-02
+    environment:
+      - ACCOUNT_ID=yahoo_02
+      # プロキシURL（.env で PROXY_02_URL を定義）
+      - PROXY_URL=${PROXY_02_URL:-}
+      # Yahoo! JAPAN ID（.env で YAHOO_02_ID を定義）
+      - YAHOO_JAPAN_ID=${YAHOO_02_ID:-}
+      # ヘッドレスモード
+      - HEADLESS=${HEADLESS:-true}
+      # タイムゾーン
+      - TZ=Asia/Tokyo
+    volumes:
+      # プロファイルディレクトリをマウント（セッション永続化）
+      - ../../platforms/yahoo_auction/accounts/profiles/yahoo_02:/app/platforms/yahoo_auction/accounts/profiles/yahoo_02
+      # 設定ファイル（読み取り専用）
+      - ../../config:/app/config:ro
+    # リソース制限
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    restart: unless-stopped
+    networks:
+      - default
+
+# ネットワーク定義
+networks:
+  default:
+    driver: bridge

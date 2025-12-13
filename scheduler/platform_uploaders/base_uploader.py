@@ -69,7 +69,8 @@ class BaseUploader(UploaderInterface):
                 return {
                     'status': 'failed',
                     'platform_item_id': None,
-                    'message': 'ASINが指定されていません'
+                    'message': 'ASINが指定されていません',
+                    'error_type': 'validation_error'
                 }
 
             # 商品情報を準備
@@ -78,7 +79,8 @@ class BaseUploader(UploaderInterface):
                 return {
                     'status': 'failed',
                     'platform_item_id': None,
-                    'message': '商品情報の準備に失敗しました'
+                    'message': '商品情報の準備に失敗しました',
+                    'error_type': 'preparation_error'
                 }
 
             # BASE API でアイテムを作成
@@ -94,11 +96,21 @@ class BaseUploader(UploaderInterface):
             }
 
         except Exception as e:
-            logger.error(f"アップロード失敗: {str(e)}")
+            error_message = str(e)
+            error_type = 'unknown_error'
+
+            # レート制限エラーを検知
+            if 'hour_api_limit' in error_message:
+                error_type = 'rate_limit'
+                logger.warning(f"[RATE_LIMIT] 商品登録失敗 (ASIN={item_data.get('asin')}): {error_message}")
+            else:
+                logger.error(f"アップロード失敗 (ASIN={item_data.get('asin')}): {error_message}")
+
             return {
                 'status': 'failed',
                 'platform_item_id': None,
-                'message': str(e)
+                'message': error_message,
+                'error_type': error_type
             }
 
     def check_duplicate(self, asin: str, sku: str) -> bool:
@@ -155,6 +167,7 @@ class BaseUploader(UploaderInterface):
                 - status: 'success' | 'failed'
                 - uploaded_count: 成功件数
                 - message: メッセージ
+                - error_type: エラータイプ（失敗時）
         """
         if not image_urls:
             return {
@@ -174,18 +187,40 @@ class BaseUploader(UploaderInterface):
             # デバッグ: アップロード結果を確認
             logger.debug(f"add_images_bulk 結果: {result}")
 
+            # レート制限エラーが含まれているかチェック
+            rate_limit_errors = [
+                r for r in result.get('results', [])
+                if r.get('error') and 'hour_api_limit' in str(r.get('error', ''))
+            ]
+            if rate_limit_errors:
+                logger.warning(
+                    f"[RATE_LIMIT] 画像アップロード中にレート制限到達: "
+                    f"Item ID={platform_item_id}, 失敗数={len(rate_limit_errors)}"
+                )
+
             return {
                 'status': 'success' if result['success_count'] > 0 else 'failed',
                 'uploaded_count': result['success_count'],
-                'message': f"{result['success_count']}/{result['total']}件の画像をアップロード"
+                'message': f"{result['success_count']}/{result['total']}件の画像をアップロード",
+                'error_type': 'rate_limit' if rate_limit_errors else None
             }
 
         except Exception as e:
-            logger.error(f"upload_images エラー: {e}", exc_info=True)
+            error_message = str(e)
+            error_type = 'unknown_error'
+
+            # レート制限エラーを検知
+            if 'hour_api_limit' in error_message:
+                error_type = 'rate_limit'
+                logger.warning(f"[RATE_LIMIT] 画像アップロードエラー (Item ID={platform_item_id}): {error_message}")
+            else:
+                logger.error(f"upload_images エラー (Item ID={platform_item_id}): {e}", exc_info=True)
+
             return {
                 'status': 'failed',
                 'uploaded_count': 0,
-                'message': f'画像アップロードエラー: {str(e)}'
+                'message': f'画像アップロードエラー: {error_message}',
+                'error_type': error_type
             }
 
     def validate_item(self, item_data: Dict[str, Any]) -> tuple[bool, Optional[str]]:

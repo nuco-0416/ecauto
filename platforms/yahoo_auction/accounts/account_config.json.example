@@ -1,0 +1,30 @@
+{
+  "accounts": [
+    {
+      "id": "yahoo_01",
+      "name": "ヤフオクアカウント1",
+      "description": "メインアカウント",
+      "active": true,
+      "proxy_id": "proxy_01",
+      "yahoo_japan_id": "${YAHOO_01_ID}",
+      "daily_listing_limit": 100,
+      "profile_path": "platforms/yahoo_auction/accounts/profiles/yahoo_01"
+    },
+    {
+      "id": "yahoo_02",
+      "name": "ヤフオクアカウント2",
+      "description": "サブアカウント",
+      "active": true,
+      "proxy_id": "proxy_02",
+      "yahoo_japan_id": "${YAHOO_02_ID}",
+      "daily_listing_limit": 100,
+      "profile_path": "platforms/yahoo_auction/accounts/profiles/yahoo_02"
+    }
+  ],
+  "_comment": {
+    "proxy_id": "config/proxies.json で定義されたプロキシIDを指定（必須）",
+    "yahoo_japan_id": "Yahoo! JAPAN ID（環境変数参照可）",
+    "profile_path": "Playwrightプロファイルのパス",
+    "daily_listing_limit": "1日の出品上限数"
+  }
+}

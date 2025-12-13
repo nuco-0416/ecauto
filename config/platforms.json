@@ -31,11 +31,11 @@
         "ebay_account_1"
       ]
     },
-    "yahoo": {
+    "yahoo_auction": {
       "enabled": false,
-      "service_name": "ECAutoUploadScheduler-Yahoo",
+      "service_name": "ECAutoUploadScheduler-YahooAuction",
       "display_name": "EC Auto - Yahoo! Auction Upload Scheduler",
-      "description": "Yahoo!オークション へのアップロード処理（未実装）",
+      "description": "Yahoo!オークション へのアップロード処理（Docker分離対応）",
       "interval_seconds": 90,
       "batch_size": 8,
       "business_hours": {
@@ -43,8 +43,13 @@
         "end": 23
       },
       "accounts": [
-        "yahoo_account_1"
-      ]
+        "yahoo_01",
+        "yahoo_02"
+      ],
+      "docker": {
+        "enabled": true,
+        "compose_file": "deploy/docker/docker-compose.yml"
+      }
     },
     "mercari_shops": {
       "enabled": false,

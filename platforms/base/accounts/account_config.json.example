@@ -1,7 +1,22 @@
 {
+  "owners": [
+    {
+      "id": "owner_01",
+      "name": "法人A",
+      "proxy_id": "proxy_01",
+      "description": "メイン法人（プロキシなし直接接続）"
+    },
+    {
+      "id": "owner_02",
+      "name": "法人B",
+      "proxy_id": "proxy_02",
+      "description": "サブ法人（有料プロキシ経由）"
+    }
+  ],
   "accounts": [
     {
       "id": "base_account_1",
+      "owner_id": "owner_01",
       "name": "BASE本店",
       "description": "メインアカウント",
       "active": true,
@@ -15,8 +30,9 @@
     },
     {
       "id": "base_account_2",
+      "owner_id": "owner_01",
       "name": "BASE別館",
-      "description": "サブアカウント1",
+      "description": "サブアカウント1（法人Aに属する）",
       "active": true,
       "daily_upload_limit": 1000,
       "rate_limit_per_hour": 50,
@@ -28,8 +44,9 @@
     },
     {
       "id": "base_account_3",
+      "owner_id": "owner_02",
       "name": "BASE雑貨店",
-      "description": "サブアカウント2",
+      "description": "別法人のアカウント（法人Bに属する）",
       "active": false,
       "daily_upload_limit": 1000,
       "rate_limit_per_hour": 50,
@@ -39,5 +56,10 @@
         "redirect_uri": "http://localhost:8000/callback"
       }
     }
-  ]
+  ],
+  "_comment": {
+    "owners": "法人（オーナー）単位でプロキシを設定。BASEでは1法人最大100アカウント。",
+    "owner_id": "アカウントが属するオーナーのID。同一オーナーのアカウントは同じプロキシを使用。",
+    "proxy_id": "config/proxies.json で定義されたプロキシIDを指定（オプション、未設定時はプロキシなし）"
+  }
 }
